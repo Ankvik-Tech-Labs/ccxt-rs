@@ -90,6 +90,14 @@ pub struct Market {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub option_type: Option<String>,
 
+    /// Market creation timestamp (milliseconds)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created: Option<i64>,
+
+    /// Supported margin modes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub margin_modes: Option<MarginModes>,
+
     /// Precision settings
     pub precision: MarketPrecision,
 
@@ -99,6 +107,18 @@ pub struct Market {
     /// Raw exchange response
     #[serde(skip_serializing_if = "Option::is_none")]
     pub info: Option<serde_json::Value>,
+}
+
+/// Supported margin modes for a market
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarginModes {
+    /// Whether cross margin is supported
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cross: Option<bool>,
+
+    /// Whether isolated margin is supported
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isolated: Option<bool>,
 }
 
 /// Market precision settings

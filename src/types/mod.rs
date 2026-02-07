@@ -16,6 +16,21 @@ pub mod funding;
 pub mod deposit;
 pub mod transfer;
 pub mod fee;
+pub mod ledger;
+pub mod greeks;
+pub mod option;
+pub mod open_interest;
+pub mod liquidation;
+pub mod long_short;
+pub mod leverage;
+pub mod margin_mod;
+pub mod conversion;
+pub mod funding_history;
+pub mod borrow;
+pub mod last_price;
+pub mod deposit_withdraw_fee;
+pub mod account;
+pub mod leverage_tier;
 
 // Re-export all types for convenience
 pub use common::*;
@@ -34,3 +49,19 @@ pub use deposit::*;
 pub use transfer::*;
 // Avoid re-exporting TransactionFee from fee (already exported from deposit)
 pub use fee::TradingFees;
+pub use ledger::*;
+pub use greeks::*;
+// Selective re-export from option to avoid conflicts with the `option` keyword
+pub use option::{OptionContract, OptionType};
+pub use open_interest::*;
+pub use liquidation::*;
+pub use long_short::*;
+pub use leverage::*;
+pub use margin_mod::*;
+pub use conversion::*;
+pub use funding_history::*;
+pub use borrow::*;
+pub use last_price::*;
+pub use deposit_withdraw_fee::*;
+pub use account::{Account, AccountType};
+pub use leverage_tier::*;

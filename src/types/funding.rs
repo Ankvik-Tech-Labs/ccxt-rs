@@ -42,6 +42,34 @@ pub struct FundingRate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_settle_price: Option<Decimal>,
 
+    /// Funding interval in hours (e.g., 8 for every 8 hours)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interval: Option<String>,
+
+    /// Previous funding rate
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_funding_rate: Option<Decimal>,
+
+    /// Previous funding timestamp
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_funding_timestamp: Option<i64>,
+
+    /// Previous funding datetime
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_funding_datetime: Option<String>,
+
+    /// Next funding rate (estimated)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_funding_rate: Option<Decimal>,
+
+    /// Next funding timestamp
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_funding_timestamp: Option<i64>,
+
+    /// Next funding datetime
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_funding_datetime: Option<String>,
+
     /// Raw exchange response
     #[serde(skip_serializing_if = "Option::is_none")]
     pub info: Option<serde_json::Value>,

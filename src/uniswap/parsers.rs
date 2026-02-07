@@ -144,7 +144,7 @@ pub fn parse_pool_to_market(
     quote_symbol: &str,
     fee_tier: FeeTier,
 ) -> Result<Market> {
-    let pool_id = pool["id"]
+    let _pool_id = pool["id"]
         .as_str()
         .ok_or_else(|| CcxtError::ParseError("Missing pool id".to_string()))?;
 
@@ -211,6 +211,8 @@ pub fn parse_pool_to_market(
         expiry_datetime: None,
         strike: None,
         option_type: None,
+        created: None,
+        margin_modes: None,
         precision: MarketPrecision {
             price: Some(if inverted { token0_decimals as i32 } else { token1_decimals as i32 }),
             amount: Some(if inverted { token1_decimals as i32 } else { token0_decimals as i32 }),

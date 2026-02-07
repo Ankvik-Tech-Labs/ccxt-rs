@@ -81,6 +81,18 @@ pub struct Position {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub percentage: Option<Decimal>,
 
+    /// Stop loss price
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_loss_price: Option<Decimal>,
+
+    /// Take profit price
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub take_profit_price: Option<Decimal>,
+
+    /// Whether this is a hedged position
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hedged: Option<bool>,
+
     /// Raw exchange response
     #[serde(skip_serializing_if = "Option::is_none")]
     pub info: Option<serde_json::Value>,

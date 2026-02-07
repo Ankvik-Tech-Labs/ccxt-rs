@@ -79,6 +79,14 @@ pub struct Ticker {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quote_volume: Option<Decimal>,
 
+    /// Index price (derivatives)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_price: Option<Decimal>,
+
+    /// Mark price (derivatives)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mark_price: Option<Decimal>,
+
     /// Raw exchange response (for debugging/advanced use)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub info: Option<serde_json::Value>,

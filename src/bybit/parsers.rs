@@ -151,6 +151,8 @@ pub fn parse_market(json: &Value) -> Result<Market> {
         expiry_datetime: None,
         strike: None,
         option_type: None,
+        created: None,
+        margin_modes: None,
         precision: MarketPrecision {
             price: price_precision,
             amount: amount_precision,
@@ -255,6 +257,8 @@ pub fn parse_ticker(json: &Value, symbol: &str) -> Result<Ticker> {
         average: None,
         base_volume: volume,
         quote_volume,
+        index_price: None,
+        mark_price: None,
         info: Some(json.clone()),
     })
 }

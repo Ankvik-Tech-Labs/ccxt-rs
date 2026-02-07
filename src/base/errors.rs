@@ -25,6 +25,14 @@ pub enum CcxtError {
     #[error("insufficient funds: {0}")]
     InsufficientFunds(String),
 
+    /// Account is not enabled for the requested operation
+    #[error("account not enabled: {0}")]
+    AccountNotEnabled(String),
+
+    /// Account has been suspended
+    #[error("account suspended: {0}")]
+    AccountSuspended(String),
+
     // === Order Errors ===
     /// Order parameters invalid (price, amount, type mismatch, etc.)
     #[error("invalid order: {0}")]
@@ -34,7 +42,23 @@ pub enum CcxtError {
     #[error("order not found: {0}")]
     OrderNotFound(String),
 
+    /// Order would be immediately fillable (e.g., post-only rejected)
+    #[error("order immediately fillable: {0}")]
+    OrderImmediatelyFillable(String),
+
+    /// Order cannot be filled (e.g., price too far from market)
+    #[error("order not fillable: {0}")]
+    OrderNotFillable(String),
+
+    /// Duplicate order ID
+    #[error("duplicate order id: {0}")]
+    DuplicateOrderId(String),
+
     // === Request Errors ===
+    /// Required arguments are missing
+    #[error("arguments required: {0}")]
+    ArgumentsRequired(String),
+
     /// Malformed request or invalid parameters
     #[error("bad request: {0}")]
     BadRequest(String),
@@ -43,9 +67,37 @@ pub enum CcxtError {
     #[error("bad symbol: {0}")]
     BadSymbol(String),
 
+    /// Invalid address (for deposits/withdrawals)
+    #[error("invalid address: {0}")]
+    InvalidAddress(String),
+
+    /// Address is pending generation
+    #[error("address pending: {0}")]
+    AddressPending(String),
+
     /// Operation not supported by this exchange
     #[error("not supported: {0}")]
     NotSupported(String),
+
+    /// Operation was rejected by the exchange
+    #[error("operation rejected: {0}")]
+    OperationRejected(String),
+
+    /// No change resulted from the operation (e.g., setting same value)
+    #[error("no change: {0}")]
+    NoChange(String),
+
+    /// Margin mode is already set to the requested value
+    #[error("margin mode already set: {0}")]
+    MarginModeAlreadySet(String),
+
+    /// Market is closed or not trading
+    #[error("market closed: {0}")]
+    MarketClosed(String),
+
+    /// Contract is unavailable
+    #[error("contract unavailable: {0}")]
+    ContractUnavailable(String),
 
     /// Generic exchange error (for exchange-specific error codes)
     #[error("exchange error: {0}")]
@@ -60,13 +112,30 @@ pub enum CcxtError {
     #[error("rate limit exceeded: {0}")]
     RateLimitExceeded(String),
 
+    /// DDoS protection triggered
+    #[error("ddos protection: {0}")]
+    DDoSProtection(String),
+
     /// Exchange service unavailable or under maintenance
     #[error("exchange not available: {0}")]
     ExchangeNotAvailable(String),
 
+    /// Exchange is undergoing maintenance
+    #[error("on maintenance: {0}")]
+    OnMaintenance(String),
+
     /// Request timed out
     #[error("request timeout")]
     RequestTimeout,
+
+    // === Response Errors ===
+    /// Bad response from exchange (malformed, unexpected format)
+    #[error("bad response: {0}")]
+    BadResponse(String),
+
+    /// Null or empty response from exchange
+    #[error("null response: {0}")]
+    NullResponse(String),
 
     // === Internal Errors ===
     /// Failed to parse exchange response
@@ -91,7 +160,7 @@ pub enum CcxtError {
     DecimalError(#[from] rust_decimal::Error),
 
     /// Alloy transport error (DEX only)
-    #[cfg(any(feature = "uniswap", feature = "pancakeswap"))]
+    #[cfg(any(feature = "uniswap", feature = "pancakeswap", feature = "hyperliquid"))]
     #[error("blockchain error: {0}")]
     AlloyError(String),
 }
@@ -100,13 +169,15 @@ pub enum CcxtError {
 pub type Result<T> = std::result::Result<T, CcxtError>;
 
 impl CcxtError {
-    /// Check if error is retryable (network/timeout/rate limit)
+    /// Check if error is retryable (network/timeout/rate limit/maintenance)
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
             CcxtError::NetworkError(_)
                 | CcxtError::RequestTimeout
                 | CcxtError::ExchangeNotAvailable(_)
+                | CcxtError::OnMaintenance(_)
+                | CcxtError::DDoSProtection(_)
         )
     }
 

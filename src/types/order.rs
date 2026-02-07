@@ -83,6 +83,18 @@ pub struct Order {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trigger_price: Option<Decimal>,
 
+    /// Stop loss price
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_loss_price: Option<Decimal>,
+
+    /// Take profit price
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub take_profit_price: Option<Decimal>,
+
+    /// Last update timestamp (milliseconds)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_update_timestamp: Option<i64>,
+
     /// Associated trades
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trades: Option<Vec<String>>,
@@ -104,4 +116,67 @@ pub struct OrderFee {
     /// Fee rate (e.g., 0.001 for 0.1%)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate: Option<Decimal>,
+}
+
+/// Order request for batch order creation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderRequest {
+    /// Unified symbol
+    pub symbol: String,
+
+    /// Order type (market, limit, etc.)
+    pub order_type: OrderType,
+
+    /// Order side (buy or sell)
+    pub side: OrderSide,
+
+    /// Order amount (in base currency)
+    pub amount: Decimal,
+
+    /// Order price (None for market orders)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price: Option<Decimal>,
+
+    /// Exchange-specific parameters
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<std::collections::HashMap<String, serde_json::Value>>,
+}
+
+/// Cancellation request for batch order cancellation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CancellationRequest {
+    /// Order ID
+    pub id: String,
+
+    /// Client order ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_order_id: Option<String>,
+
+    /// Unified symbol (required by some exchanges)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+}
+
+/// Edit order request for batch order editing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditOrderRequest {
+    /// Order ID
+    pub id: String,
+
+    /// Unified symbol
+    pub symbol: String,
+
+    /// Order type
+    pub order_type: OrderType,
+
+    /// Order side
+    pub side: OrderSide,
+
+    /// New amount (None to keep current)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount: Option<Decimal>,
+
+    /// New price (None to keep current)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price: Option<Decimal>,
 }

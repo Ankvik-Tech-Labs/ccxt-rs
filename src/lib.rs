@@ -53,8 +53,8 @@ pub mod uniswap;
 #[cfg(feature = "pancakeswap")]
 pub mod pancakeswap;
 
-// #[cfg(feature = "hyperliquid")]
-// pub mod hyperliquid;
+#[cfg(feature = "hyperliquid")]
+pub mod hyperliquid;
 
 /// Convenience re-exports for common usage
 pub mod prelude {
@@ -77,6 +77,6 @@ pub mod prelude {
     #[cfg(feature = "pancakeswap")]
     pub use crate::pancakeswap;
 
-    // #[cfg(feature = "hyperliquid")]
-    // pub use crate::hyperliquid;
+    #[cfg(feature = "hyperliquid")]
+    pub use crate::hyperliquid::{self, Hyperliquid, HyperliquidBuilder};
 }

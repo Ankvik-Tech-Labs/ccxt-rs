@@ -277,13 +277,35 @@ impl PoolManager {
         token1_decimals: u8,
         inverted: bool,
     ) -> Result<Decimal> {
-        // For now, we'll calculate price from subgraph data instead of on-chain
-        // TODO: Implement proper Alloy contract call when we confirm the provider type
-        // This is a simplified implementation that relies on subgraph data
-        Err(CcxtError::NotSupported(
-            "On-chain price queries are temporarily disabled. Use subgraph-based pricing instead."
-                .to_string(),
-        ))
+        use alloy::sol_types::SolCall;
+
+        // Build the slot0() call data
+        let call_data = IUniswapV3Pool::slot0Call {}.abi_encode();
+
+        // Create transaction request
+        let tx = alloy::rpc::types::TransactionRequest::default()
+            .to(pool_address)
+            .input(call_data.into());
+
+        // Execute the call
+        let result = self
+            .provider
+            .provider()
+            .call(&tx)
+            .await
+            .map_err(|e| CcxtError::NetworkError(format!("Failed to call slot0: {}", e)))?;
+
+        // Decode the response
+        let slot0_return = IUniswapV3Pool::slot0Call::abi_decode_returns(&result, false)
+            .map_err(|e| CcxtError::ParseError(format!("Failed to decode slot0 response: {}", e)))?;
+
+        // Convert U160 to u128 for the price calculation
+        let sqrt_price_x96: u128 = slot0_return
+            .sqrtPriceX96
+            .try_into()
+            .map_err(|_| CcxtError::ParseError("sqrtPriceX96 overflow".to_string()))?;
+
+        sqrt_price_x96_to_price(sqrt_price_x96, token0_decimals, token1_decimals, inverted)
     }
 
     /// Parse pool info from subgraph response
