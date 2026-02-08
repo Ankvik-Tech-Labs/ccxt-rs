@@ -1,0 +1,48 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo lock for libraries (uncomment if publishing as lib)
+# Cargo.lock
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+**/.DS_Store
+
+# Python virtual environment
+.venv/
+
+# Environment & secrets
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Debugging
+*.dSYM/
+*.log
+
+# Data & test artifacts
+*.parquet
+/data/
+
+# Implementation notes / internal docs (keep only README.md)
+API_REFERENCE.md
+BINANCE_DATA_MAPPING.md
+BINANCE_IMPLEMENTATION.md
+BYBIT_IMPLEMENTATION.md
+CCXT_API_MAPPING.md
+CCXT_COMPATIBILITY.md
+DELIVERY_SUMMARY.md
+IMPLEMENTATION_STATUS.md
+PHASE1_COMPLETE.md
