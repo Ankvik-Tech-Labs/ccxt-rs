@@ -16,6 +16,15 @@ pub struct Balances {
     /// Balances by currency code
     pub balances: HashMap<String, Balance>,
 
+    /// Aggregated free amounts by currency
+    pub free: HashMap<String, Decimal>,
+
+    /// Aggregated used amounts by currency
+    pub used: HashMap<String, Decimal>,
+
+    /// Aggregated total amounts by currency
+    pub total: HashMap<String, Decimal>,
+
     /// Raw exchange response
     #[serde(skip_serializing_if = "Option::is_none")]
     pub info: Option<serde_json::Value>,
@@ -35,6 +44,10 @@ pub struct Balance {
 
     /// Total amount (free + used)
     pub total: Decimal,
+
+    /// Debt amount (for margin trading)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debt: Option<Decimal>,
 }
 
 impl Balance {
@@ -45,6 +58,7 @@ impl Balance {
             free,
             used,
             total: free + used,
+            debt: None,
         }
     }
 }

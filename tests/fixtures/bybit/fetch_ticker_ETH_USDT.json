@@ -1,0 +1,80 @@
+{
+  "exchange": "bybit",
+  "method": "fetch_ticker",
+  "args": [
+    "ETH/USDT"
+  ],
+  "http_response": {
+    "retCode": 0,
+    "retMsg": "OK",
+    "result": {
+      "category": "spot",
+      "list": [
+        {
+          "symbol": "ETHUSDT",
+          "bid1Price": "2088.36",
+          "bid1Size": "0.0617",
+          "ask1Price": "2088.37",
+          "ask1Size": "2.03155",
+          "lastPrice": "2088.37",
+          "prevPrice24h": "2074.21",
+          "price24hPcnt": "0.0068",
+          "highPrice24h": "2127.02",
+          "lowPrice24h": "1995.12",
+          "turnover24h": "515915872.0805508",
+          "volume24h": "250886.49361",
+          "usdIndexPrice": "2086.963975"
+        }
+      ]
+    },
+    "retExtInfo": {},
+    "time": 1770531563958
+  },
+  "parsed_response": {
+    "symbol": "ETH/USDT",
+    "timestamp": null,
+    "datetime": null,
+    "high": 2127.02,
+    "low": 1995.12,
+    "bid": 2088.36,
+    "bidVolume": 0.0617,
+    "ask": 2088.37,
+    "askVolume": 2.03155,
+    "vwap": 2056.37164702272,
+    "open": 2074.21,
+    "close": 2088.37,
+    "last": 2088.37,
+    "previousClose": null,
+    "change": 14.16,
+    "percentage": 0.68,
+    "average": 2081.29,
+    "baseVolume": 250886.49361,
+    "quoteVolume": 515915872.0805508,
+    "markPrice": null,
+    "indexPrice": null,
+    "info": {
+      "symbol": "ETHUSDT",
+      "bid1Price": "2088.36",
+      "bid1Size": "0.0617",
+      "ask1Price": "2088.37",
+      "ask1Size": "2.03155",
+      "lastPrice": "2088.37",
+      "prevPrice24h": "2074.21",
+      "price24hPcnt": "0.0068",
+      "highPrice24h": "2127.02",
+      "lowPrice24h": "1995.12",
+      "turnover24h": "515915872.0805508",
+      "volume24h": "250886.49361",
+      "usdIndexPrice": "2086.963975"
+    }
+  },
+  "skip_keys": [
+    "timestamp",
+    "datetime",
+    "info"
+  ],
+  "tolerance": {
+    "percentage": 0.001,
+    "average": 0.001
+  }
+}

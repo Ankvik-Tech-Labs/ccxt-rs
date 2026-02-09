@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 /// Market - trading pair information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Market {
+    /// Exchange-native symbol ID (e.g., "BTCUSDT" for Binance)
+    pub id: String,
+
     /// Unified symbol (e.g., "BTC/USDT")
     pub symbol: String,
 

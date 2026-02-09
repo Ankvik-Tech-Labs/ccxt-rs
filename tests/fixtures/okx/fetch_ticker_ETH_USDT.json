@@ -1,0 +1,81 @@
+{
+  "exchange": "okx",
+  "method": "fetch_ticker",
+  "args": [
+    "ETH/USDT"
+  ],
+  "http_response": {
+    "code": "0",
+    "msg": "",
+    "data": [
+      {
+        "instType": "SPOT",
+        "instId": "ETH-USDT",
+        "last": "2088",
+        "lastSz": "0.00309",
+        "askPx": "2088.01",
+        "askSz": "0.231635",
+        "bidPx": "2088",
+        "bidSz": "6.614187",
+        "open24h": "2074.18",
+        "high24h": "2125",
+        "low24h": "1993.61",
+        "volCcy24h": "891480576.66657836",
+        "vol24h": "433517.471126",
+        "ts": "1770531569705",
+        "sodUtc0": "2087.34",
+        "sodUtc8": "2052.58"
+      }
+    ]
+  },
+  "parsed_response": {
+    "symbol": "ETH/USDT",
+    "timestamp": 1770531569705,
+    "datetime": "2026-02-08T06:19:29.705Z",
+    "high": 2125.0,
+    "low": 1993.61,
+    "bid": 2088.0,
+    "bidVolume": 6.614187,
+    "ask": 2088.01,
+    "askVolume": 0.231635,
+    "vwap": 2056.389040910126,
+    "open": 2074.18,
+    "close": 2088.0,
+    "last": 2088.0,
+    "previousClose": null,
+    "change": 13.82,
+    "percentage": 0.6662874003220549,
+    "average": 2081.09,
+    "baseVolume": 433517.471126,
+    "quoteVolume": 891480576.6665784,
+    "markPrice": null,
+    "indexPrice": null,
+    "info": {
+      "instType": "SPOT",
+      "instId": "ETH-USDT",
+      "last": "2088",
+      "lastSz": "0.00309",
+      "askPx": "2088.01",
+      "askSz": "0.231635",
+      "bidPx": "2088",
+      "bidSz": "6.614187",
+      "open24h": "2074.18",
+      "high24h": "2125",
+      "low24h": "1993.61",
+      "volCcy24h": "891480576.66657836",
+      "vol24h": "433517.471126",
+      "ts": "1770531569705",
+      "sodUtc0": "2087.34",
+      "sodUtc8": "2052.58"
+    }
+  },
+  "skip_keys": [
+    "timestamp",
+    "datetime",
+    "info"
+  ],
+  "tolerance": {
+    "percentage": 0.001,
+    "average": 0.001
+  }
+}

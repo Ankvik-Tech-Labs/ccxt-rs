@@ -14,6 +14,8 @@ pub mod signer;
 pub mod rate_limiter;
 pub mod decimal;
 pub mod precise;
+pub mod ws;
+pub mod ws_connection;
 
 pub use errors::{CcxtError, Result};
 pub use exchange::{Exchange, ExchangeFeatures, ExchangeType};

@@ -44,6 +44,10 @@ async-trait = "0.1"
 # Rate limiting
 governor = "0.8"
 
+# WebSocket
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+
 # Logging
 tracing = "0.1"
 

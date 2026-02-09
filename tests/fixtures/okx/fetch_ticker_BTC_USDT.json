@@ -1,0 +1,81 @@
+{
+  "exchange": "okx",
+  "method": "fetch_ticker",
+  "args": [
+    "BTC/USDT"
+  ],
+  "http_response": {
+    "code": "0",
+    "msg": "",
+    "data": [
+      {
+        "instType": "SPOT",
+        "instId": "BTC-USDT",
+        "last": "69344.1",
+        "lastSz": "0.08757235",
+        "askPx": "69346.8",
+        "askSz": "0.03860622",
+        "bidPx": "69346.7",
+        "bidSz": "0.98020332",
+        "open24h": "69953.5",
+        "high24h": "70303.4",
+        "low24h": "67350",
+        "volCcy24h": "814107860.330412248",
+        "vol24h": "11820.721099",
+        "ts": "1770531569610",
+        "sodUtc0": "69296.1",
+        "sodUtc8": "69159.9"
+      }
+    ]
+  },
+  "parsed_response": {
+    "symbol": "BTC/USDT",
+    "timestamp": 1770531569610,
+    "datetime": "2026-02-08T06:19:29.610Z",
+    "high": 70303.4,
+    "low": 67350.0,
+    "bid": 69346.7,
+    "bidVolume": 0.98020332,
+    "ask": 69346.8,
+    "askVolume": 0.03860622,
+    "vwap": 68871.25188997848,
+    "open": 69953.5,
+    "close": 69344.1,
+    "last": 69344.1,
+    "previousClose": null,
+    "change": -609.4,
+    "percentage": -0.871150121151908,
+    "average": 69648.8,
+    "baseVolume": 11820.721099,
+    "quoteVolume": 814107860.3304123,
+    "markPrice": null,
+    "indexPrice": null,
+    "info": {
+      "instType": "SPOT",
+      "instId": "BTC-USDT",
+      "last": "69344.1",
+      "lastSz": "0.08757235",
+      "askPx": "69346.8",
+      "askSz": "0.03860622",
+      "bidPx": "69346.7",
+      "bidSz": "0.98020332",
+      "open24h": "69953.5",
+      "high24h": "70303.4",
+      "low24h": "67350",
+      "volCcy24h": "814107860.330412248",
+      "vol24h": "11820.721099",
+      "ts": "1770531569610",
+      "sodUtc0": "69296.1",
+      "sodUtc8": "69159.9"
+    }
+  },
+  "skip_keys": [
+    "timestamp",
+    "datetime",
+    "info"
+  ],
+  "tolerance": {
+    "percentage": 0.001,
+    "average": 0.001
+  }
+}

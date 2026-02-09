@@ -144,7 +144,7 @@ pub fn parse_pool_to_market(
     quote_symbol: &str,
     fee_tier: FeeTier,
 ) -> Result<Market> {
-    let _pool_id = pool["id"]
+    let pool_id = pool["id"]
         .as_str()
         .ok_or_else(|| CcxtError::ParseError("Missing pool id".to_string()))?;
 
@@ -187,6 +187,7 @@ pub fn parse_pool_to_market(
     let fee_percentage = fee_tier.as_percentage();
 
     Ok(Market {
+        id: pool_id.to_string(),
         symbol: symbol.clone(),
         base: base_symbol.to_string(),
         quote: quote_symbol.to_string(),

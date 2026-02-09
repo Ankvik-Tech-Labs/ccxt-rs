@@ -1,0 +1,204 @@
+{
+  "exchange": "okx",
+  "method": "fetch_trades",
+  "args": [
+    "BTC/USDT"
+  ],
+  "http_response": {
+    "code": "0",
+    "msg": "",
+    "data": [
+      {
+        "instId": "BTC-USDT",
+        "side": "sell",
+        "sz": "0.08757235",
+        "px": "69344.1",
+        "source": "0",
+        "tradeId": "954514612",
+        "ts": "1770531567674"
+      },
+      {
+        "instId": "BTC-USDT",
+        "side": "sell",
+        "sz": "0.00015",
+        "px": "69344.2",
+        "source": "0",
+        "tradeId": "954514611",
+        "ts": "1770531567674"
+      },
+      {
+        "instId": "BTC-USDT",
+        "side": "sell",
+        "sz": "0.0192",
+        "px": "69344.2",
+        "source": "0",
+        "tradeId": "954514610",
+        "ts": "1770531567674"
+      },
+      {
+        "instId": "BTC-USDT",
+        "side": "sell",
+        "sz": "0.004037",
+        "px": "69344.3",
+        "source": "0",
+        "tradeId": "954514609",
+        "ts": "1770531567674"
+      },
+      {
+        "instId": "BTC-USDT",
+        "side": "sell",
+        "sz": "0.00216311",
+        "px": "69344.5",
+        "source": "0",
+        "tradeId": "954514608",
+        "ts": "1770531567674"
+      }
+    ]
+  },
+  "parsed_response": [
+    {
+      "info": {
+        "instId": "BTC-USDT",
+        "side": "sell",
+        "sz": "0.00216311",
+        "px": "69344.5",
+        "source": "0",
+        "tradeId": "954514608",
+        "ts": "1770531567674"
+      },
+      "timestamp": 1770531567674,
+      "datetime": "2026-02-08T06:19:27.674Z",
+      "symbol": "BTC/USDT",
+      "id": "954514608",
+      "order": null,
+      "type": null,
+      "takerOrMaker": null,
+      "side": "sell",
+      "price": 69344.5,
+      "amount": 0.00216311,
+      "cost": 149.999781395,
+      "fee": {
+        "cost": null,
+        "currency": null
+      },
+      "fees": []
+    },
+    {
+      "info": {
+        "instId": "BTC-USDT",
+        "side": "sell",
+        "sz": "0.004037",
+        "px": "69344.3",
+        "source": "0",
+        "tradeId": "954514609",
+        "ts": "1770531567674"
+      },
+      "timestamp": 1770531567674,
+      "datetime": "2026-02-08T06:19:27.674Z",
+      "symbol": "BTC/USDT",
+      "id": "954514609",
+      "order": null,
+      "type": null,
+      "takerOrMaker": null,
+      "side": "sell",
+      "price": 69344.3,
+      "amount": 0.004037,
+      "cost": 279.9429391,
+      "fee": {
+        "cost": null,
+        "currency": null
+      },
+      "fees": []
+    },
+    {
+      "info": {
+        "instId": "BTC-USDT",
+        "side": "sell",
+        "sz": "0.0192",
+        "px": "69344.2",
+        "source": "0",
+        "tradeId": "954514610",
+        "ts": "1770531567674"
+      },
+      "timestamp": 1770531567674,
+      "datetime": "2026-02-08T06:19:27.674Z",
+      "symbol": "BTC/USDT",
+      "id": "954514610",
+      "order": null,
+      "type": null,
+      "takerOrMaker": null,
+      "side": "sell",
+      "price": 69344.2,
+      "amount": 0.0192,
+      "cost": 1331.40864,
+      "fee": {
+        "cost": null,
+        "currency": null
+      },
+      "fees": []
+    },
+    {
+      "info": {
+        "instId": "BTC-USDT",
+        "side": "sell",
+        "sz": "0.00015",
+        "px": "69344.2",
+        "source": "0",
+        "tradeId": "954514611",
+        "ts": "1770531567674"
+      },
+      "timestamp": 1770531567674,
+      "datetime": "2026-02-08T06:19:27.674Z",
+      "symbol": "BTC/USDT",
+      "id": "954514611",
+      "order": null,
+      "type": null,
+      "takerOrMaker": null,
+      "side": "sell",
+      "price": 69344.2,
+      "amount": 0.00015,
+      "cost": 10.40163,
+      "fee": {
+        "cost": null,
+        "currency": null
+      },
+      "fees": []
+    },
+    {
+      "info": {
+        "instId": "BTC-USDT",
+        "side": "sell",
+        "sz": "0.08757235",
+        "px": "69344.1",
+        "source": "0",
+        "tradeId": "954514612",
+        "ts": "1770531567674"
+      },
+      "timestamp": 1770531567674,
+      "datetime": "2026-02-08T06:19:27.674Z",
+      "symbol": "BTC/USDT",
+      "id": "954514612",
+      "order": null,
+      "type": null,
+      "takerOrMaker": null,
+      "side": "sell",
+      "price": 69344.1,
+      "amount": 0.08757235,
+      "cost": 6072.625795635,
+      "fee": {
+        "cost": null,
+        "currency": null
+      },
+      "fees": []
+    }
+  ],
+  "skip_keys": [
+    "timestamp",
+    "datetime",
+    "info"
+  ],
+  "tolerance": {
+    "percentage": 0.001,
+    "average": 0.001
+  }
+}

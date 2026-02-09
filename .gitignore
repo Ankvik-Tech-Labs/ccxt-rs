@@ -36,13 +36,5 @@ Desktop.ini
 *.parquet
 /data/
 
-# Implementation notes / internal docs (keep only README.md)
-API_REFERENCE.md
-BINANCE_DATA_MAPPING.md
-BINANCE_IMPLEMENTATION.md
-BYBIT_IMPLEMENTATION.md
-CCXT_API_MAPPING.md
-CCXT_COMPATIBILITY.md
-DELIVERY_SUMMARY.md
-IMPLEMENTATION_STATUS.md
-PHASE1_COMPLETE.md
+# Internal docs / notes (summaries, implementation notes, etc.)
+docs/internal/

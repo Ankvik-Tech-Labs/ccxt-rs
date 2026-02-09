@@ -1,6 +1,7 @@
 //! Order data structure
 
 use crate::types::common::{OrderSide, OrderStatus, OrderType, TimeInForce};
+use crate::types::trade::Trade;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -97,7 +98,7 @@ pub struct Order {
 
     /// Associated trades
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub trades: Option<Vec<String>>,
+    pub trades: Option<Vec<Trade>>,
 
     /// Raw exchange response
     #[serde(skip_serializing_if = "Option::is_none")]

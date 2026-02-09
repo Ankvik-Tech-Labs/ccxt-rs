@@ -131,17 +131,27 @@ impl HyperliquidBuilder {
                 create_order: true,
                 create_market_order: true,
                 create_limit_order: true,
+                create_stop_order: true,
+                create_stop_loss_order: true,
+                create_take_profit_order: true,
+                create_trigger_order: true,
                 cancel_order: true,
                 cancel_all_orders: true,
+                create_orders: true,
+                cancel_orders: true,
                 edit_order: true,
                 fetch_order: true,
+                fetch_orders: true,
                 fetch_open_orders: true,
+                fetch_closed_orders: true,
                 fetch_my_trades: true,
                 fetch_balance: true,
                 withdraw: true,
                 transfer: true,
                 fetch_positions: true,
                 fetch_funding_rate: true,
+                fetch_funding_rate_history: true,
+                fetch_leverage_tiers: true,
                 set_leverage: true,
                 set_margin_mode: true,
                 swap_trading: true,
@@ -232,18 +242,47 @@ impl Hyperliquid {
         reduce_only: bool,
         params: Option<&Params>,
     ) -> HlOrderWire {
-        let tif = params
-            .and_then(|p| p.get("timeInForce"))
+        // Check if this is a trigger order (stop-loss, take-profit)
+        let stop_price = params
+            .and_then(|p| p.get("stopPrice"))
             .and_then(|v| v.as_str())
-            .unwrap_or(match order_type {
-                OrderType::Market => "Ioc",
-                _ => "Gtc",
+            .or_else(|| {
+                params
+                    .and_then(|p| p.get("triggerPrice"))
+                    .and_then(|v| v.as_str())
             });
 
-        let order_type_wire = HlOrderTypeWire::Limit {
-            limit: HlLimitOrder {
-                tif: tif.to_string(),
-            },
+        let order_type_wire = if let Some(trigger_px) = stop_price {
+            let tpsl = params
+                .and_then(|p| p.get("triggerType"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("sl");
+            let is_market = params
+                .and_then(|p| p.get("triggerIsMarket"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+
+            HlOrderTypeWire::Trigger {
+                trigger: HlTriggerOrder {
+                    is_market,
+                    trigger_px: float_to_wire(trigger_px),
+                    tpsl: tpsl.to_string(),
+                },
+            }
+        } else {
+            let tif = params
+                .and_then(|p| p.get("timeInForce"))
+                .and_then(|v| v.as_str())
+                .unwrap_or(match order_type {
+                    OrderType::Market => "Ioc",
+                    _ => "Gtc",
+                });
+
+            HlOrderTypeWire::Limit {
+                limit: HlLimitOrder {
+                    tif: tif.to_string(),
+                },
+            }
         };
 
         HlOrderWire {
@@ -732,13 +771,36 @@ impl Exchange for Hyperliquid {
 
     async fn fetch_orders(
         &self,
-        _symbol: Option<&str>,
-        _since: Option<i64>,
-        _limit: Option<u32>,
+        symbol: Option<&str>,
+        since: Option<i64>,
+        limit: Option<u32>,
     ) -> Result<Vec<Order>> {
-        Err(CcxtError::NotSupported(
-            "fetch_orders not supported by Hyperliquid".to_string(),
-        ))
+        let user = self.user_address()?;
+
+        let extra = serde_json::json!({ "user": user });
+        let json = self
+            .client
+            .info_request("frontendOpenOrders", Some(extra))
+            .await?;
+
+        let raw_orders: Vec<HlFrontendOpenOrder> = serde_json::from_value(json)?;
+        let mut orders = parsers::parse_frontend_orders(&raw_orders)?;
+
+        if let Some(sym) = symbol {
+            orders.retain(|o| o.symbol == sym);
+        }
+
+        if let Some(since_ts) = since {
+            orders.retain(|o| o.timestamp >= since_ts);
+        }
+
+        if let Some(limit) = limit {
+            if orders.len() > limit as usize {
+                orders.truncate(limit as usize);
+            }
+        }
+
+        Ok(orders)
     }
 
     async fn fetch_open_orders(
@@ -767,13 +829,40 @@ impl Exchange for Hyperliquid {
 
     async fn fetch_closed_orders(
         &self,
-        _symbol: Option<&str>,
-        _since: Option<i64>,
-        _limit: Option<u32>,
+        symbol: Option<&str>,
+        since: Option<i64>,
+        limit: Option<u32>,
     ) -> Result<Vec<Order>> {
-        Err(CcxtError::NotSupported(
-            "fetch_closed_orders not supported by Hyperliquid".to_string(),
-        ))
+        let user = self.user_address()?;
+
+        let extra = serde_json::json!({
+            "user": user,
+            "aggregateByTime": false,
+        });
+
+        let json = self
+            .client
+            .info_request("userFills", Some(extra))
+            .await?;
+
+        let raw_fills: Vec<HlUserFill> = serde_json::from_value(json)?;
+        let mut orders = parsers::parse_closed_orders_from_fills(&raw_fills)?;
+
+        if let Some(sym) = symbol {
+            orders.retain(|o| o.symbol == sym);
+        }
+
+        if let Some(since_ts) = since {
+            orders.retain(|o| o.timestamp >= since_ts);
+        }
+
+        if let Some(limit) = limit {
+            if orders.len() > limit as usize {
+                orders.truncate(limit as usize);
+            }
+        }
+
+        Ok(orders)
     }
 
     async fn fetch_my_trades(
@@ -1018,6 +1107,43 @@ impl Exchange for Hyperliquid {
         parsers::parse_funding_rate(&entries, &unified)
     }
 
+    async fn fetch_funding_rate_history(
+        &self,
+        symbol: &str,
+        since: Option<i64>,
+        limit: Option<u32>,
+    ) -> Result<Vec<FundingRateHistory>> {
+        let (hl_name, _) = self.resolve_symbol(symbol).await?;
+        let unified = parsers::symbol_from_hyperliquid(&hl_name);
+
+        let now_ms = timestamp_ms();
+        let start_time = since.unwrap_or(now_ms - 7 * 86_400_000); // Default: 7 days
+
+        let extra = serde_json::json!({
+            "coin": hl_name,
+            "startTime": start_time,
+            "endTime": now_ms,
+        });
+
+        let json = self
+            .client
+            .info_request("fundingHistory", Some(extra))
+            .await?;
+
+        let entries: Vec<HlFundingEntry> = serde_json::from_value(json)?;
+        let mut history = parsers::parse_funding_rate_history(&entries, &unified)?;
+
+        if let Some(limit) = limit {
+            if history.len() > limit as usize {
+                // Keep the most recent entries
+                let start = history.len() - limit as usize;
+                history = history.split_off(start);
+            }
+        }
+
+        Ok(history)
+    }
+
     async fn set_leverage(&self, leverage: u32, symbol: &str) -> Result<()> {
         let signer = self.require_signer()?;
         let (_hl_name, asset_idx) = self.resolve_symbol(symbol).await?;
@@ -1084,5 +1210,242 @@ impl Exchange for Hyperliquid {
         }
 
         Ok(())
+    }
+
+    async fn create_orders(&self, orders: &[OrderRequest]) -> Result<Vec<Order>> {
+        let signer = self.require_signer()?;
+
+        let mut order_wires = Vec::with_capacity(orders.len());
+        let mut order_metas = Vec::with_capacity(orders.len());
+
+        for req in orders {
+            let (hl_name, asset_idx) = self.resolve_symbol(&req.symbol).await?;
+            let is_buy = matches!(req.side, OrderSide::Buy);
+            let reduce_only = req
+                .params
+                .as_ref()
+                .and_then(|p| p.get("reduceOnly"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let effective_price = match req.order_type {
+                OrderType::Market => {
+                    let mids = self.client.info_request("allMids", None).await?;
+                    let mid_str = mids
+                        .get(&hl_name)
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| CcxtError::BadSymbol(format!("No mid price for {}", hl_name)))?;
+                    let mid = Decimal::from_str(mid_str)
+                        .map_err(|e| CcxtError::ParseError(format!("Invalid mid price: {}", e)))?;
+                    let slippage = Decimal::from_str("0.05").unwrap();
+                    if is_buy {
+                        mid * (Decimal::ONE + slippage)
+                    } else {
+                        mid * (Decimal::ONE - slippage)
+                    }
+                }
+                _ => req.price.ok_or_else(|| {
+                    CcxtError::InvalidOrder("Price required for limit orders".to_string())
+                })?,
+            };
+
+            let wire = self.build_order_wire(
+                asset_idx,
+                is_buy,
+                effective_price,
+                req.amount,
+                req.order_type,
+                reduce_only,
+                req.params.as_ref(),
+            );
+            order_wires.push(wire);
+            order_metas.push((req.symbol.clone(), req.side, req.order_type, req.amount, req.price));
+        }
+
+        let action = serde_json::json!({
+            "type": "order",
+            "orders": order_wires,
+            "grouping": "na",
+        });
+
+        let nonce = timestamp_ms() as u64;
+        let sig = signer
+            .sign_l1_action(&action, self.vault_address.as_deref(), nonce)
+            .await?;
+
+        let response = self
+            .client
+            .exchange_request(action, nonce, sig.to_json(), self.vault_address.as_deref())
+            .await?;
+
+        let statuses = response
+            .get("response")
+            .and_then(|r| r.get("data"))
+            .and_then(|d| d.get("statuses"))
+            .and_then(|s| s.as_array())
+            .ok_or_else(|| CcxtError::ParseError("Missing statuses in batch order response".to_string()))?;
+
+        let mut result = Vec::with_capacity(statuses.len());
+        for (i, status_val) in statuses.iter().enumerate() {
+            let status_entry: HlOrderStatusEntry = serde_json::from_value(status_val.clone())?;
+            let (ref symbol, side, order_type, amount, price) = order_metas[i];
+            let order =
+                parsers::parse_order_response(&status_entry, symbol, side, order_type, amount, price)?;
+            result.push(order);
+        }
+
+        Ok(result)
+    }
+
+    async fn cancel_orders(
+        &self,
+        ids: &[&str],
+        symbol: Option<&str>,
+    ) -> Result<Vec<Order>> {
+        let signer = self.require_signer()?;
+        let symbol = symbol.ok_or_else(|| {
+            CcxtError::BadRequest("Symbol required for cancel_orders on Hyperliquid".to_string())
+        })?;
+        let (_hl_name, asset_idx) = self.resolve_symbol(symbol).await?;
+
+        let cancels: Vec<HlCancelWire> = ids
+            .iter()
+            .map(|id| {
+                let oid: u64 = id
+                    .parse()
+                    .map_err(|_| CcxtError::OrderNotFound(format!("Invalid order ID: {}", id)))?;
+                Ok(HlCancelWire { a: asset_idx, o: oid })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let action = serde_json::json!({
+            "type": "cancel",
+            "cancels": cancels,
+        });
+
+        let nonce = timestamp_ms() as u64;
+        let sig = signer
+            .sign_l1_action(&action, self.vault_address.as_deref(), nonce)
+            .await?;
+
+        let _response = self
+            .client
+            .exchange_request(action, nonce, sig.to_json(), self.vault_address.as_deref())
+            .await?;
+
+        let now = timestamp_ms();
+        Ok(ids
+            .iter()
+            .map(|id| Order {
+                id: id.to_string(),
+                client_order_id: None,
+                symbol: symbol.to_string(),
+                order_type: OrderType::Limit,
+                side: OrderSide::Buy,
+                status: OrderStatus::Canceled,
+                timestamp: now,
+                datetime: crate::base::signer::timestamp_to_iso8601(now),
+                last_trade_timestamp: None,
+                price: None,
+                average: None,
+                amount: Decimal::ZERO,
+                filled: None,
+                remaining: None,
+                cost: None,
+                fee: None,
+                time_in_force: None,
+                post_only: None,
+                reduce_only: None,
+                stop_price: None,
+                trigger_price: None,
+                stop_loss_price: None,
+                take_profit_price: None,
+                last_update_timestamp: None,
+                trades: None,
+                info: None,
+            })
+            .collect())
+    }
+
+    async fn create_stop_loss_order(
+        &self,
+        symbol: &str,
+        _order_type: OrderType,
+        side: OrderSide,
+        amount: Decimal,
+        _price: Option<Decimal>,
+        stop_loss_price: Decimal,
+        params: Option<&Params>,
+    ) -> Result<Order> {
+        let mut trigger_params = params.cloned().unwrap_or_default();
+        trigger_params.insert(
+            "stopPrice".to_string(),
+            serde_json::Value::String(stop_loss_price.to_string()),
+        );
+        trigger_params.insert(
+            "triggerType".to_string(),
+            serde_json::Value::String("sl".to_string()),
+        );
+
+        self.create_order(
+            symbol,
+            OrderType::Limit,
+            side,
+            amount,
+            Some(stop_loss_price),
+            Some(&trigger_params),
+        )
+        .await
+    }
+
+    async fn create_take_profit_order(
+        &self,
+        symbol: &str,
+        _order_type: OrderType,
+        side: OrderSide,
+        amount: Decimal,
+        _price: Option<Decimal>,
+        take_profit_price: Decimal,
+        params: Option<&Params>,
+    ) -> Result<Order> {
+        let mut trigger_params = params.cloned().unwrap_or_default();
+        trigger_params.insert(
+            "stopPrice".to_string(),
+            serde_json::Value::String(take_profit_price.to_string()),
+        );
+        trigger_params.insert(
+            "triggerType".to_string(),
+            serde_json::Value::String("tp".to_string()),
+        );
+
+        self.create_order(
+            symbol,
+            OrderType::Limit,
+            side,
+            amount,
+            Some(take_profit_price),
+            Some(&trigger_params),
+        )
+        .await
+    }
+
+    async fn fetch_leverage_tiers(
+        &self,
+        symbols: Option<&[&str]>,
+    ) -> Result<HashMap<String, Vec<LeverageTier>>> {
+        self.ensure_meta().await?;
+
+        let meta_guard = self.meta.read().await;
+        let meta = meta_guard
+            .as_ref()
+            .ok_or_else(|| CcxtError::ParseError("Meta not loaded".to_string()))?;
+
+        let mut tiers = parsers::parse_leverage_tiers(meta);
+
+        if let Some(filter) = symbols {
+            tiers.retain(|k, _| filter.contains(&k.as_str()));
+        }
+
+        Ok(tiers)
     }
 }

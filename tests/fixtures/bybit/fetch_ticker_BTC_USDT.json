@@ -1,0 +1,80 @@
+{
+  "exchange": "bybit",
+  "method": "fetch_ticker",
+  "args": [
+    "BTC/USDT"
+  ],
+  "http_response": {
+    "retCode": 0,
+    "retMsg": "OK",
+    "result": {
+      "category": "spot",
+      "list": [
+        {
+          "symbol": "BTCUSDT",
+          "bid1Price": "69372.5",
+          "bid1Size": "0.249877",
+          "ask1Price": "69372.6",
+          "ask1Size": "0.251834",
+          "lastPrice": "69372.6",
+          "prevPrice24h": "69974.7",
+          "price24hPcnt": "-0.0086",
+          "highPrice24h": "70304.9",
+          "lowPrice24h": "67339",
+          "turnover24h": "814182828.76347208",
+          "volume24h": "11832.171709",
+          "usdIndexPrice": "69329.98048"
+        }
+      ]
+    },
+    "retExtInfo": {},
+    "time": 1770531563839
+  },
+  "parsed_response": {
+    "symbol": "BTC/USDT",
+    "timestamp": null,
+    "datetime": null,
+    "high": 70304.9,
+    "low": 67339.0,
+    "bid": 69372.5,
+    "bidVolume": 0.249877,
+    "ask": 69372.6,
+    "askVolume": 0.251834,
+    "vwap": 68810.93756813668,
+    "open": 69974.7,
+    "close": 69372.6,
+    "last": 69372.6,
+    "previousClose": null,
+    "change": -602.1,
+    "percentage": -0.86,
+    "average": 69673.6,
+    "baseVolume": 11832.171709,
+    "quoteVolume": 814182828.7634721,
+    "markPrice": null,
+    "indexPrice": null,
+    "info": {
+      "symbol": "BTCUSDT",
+      "bid1Price": "69372.5",
+      "bid1Size": "0.249877",
+      "ask1Price": "69372.6",
+      "ask1Size": "0.251834",
+      "lastPrice": "69372.6",
+      "prevPrice24h": "69974.7",
+      "price24hPcnt": "-0.0086",
+      "highPrice24h": "70304.9",
+      "lowPrice24h": "67339",
+      "turnover24h": "814182828.76347208",
+      "volume24h": "11832.171709",
+      "usdIndexPrice": "69329.98048"
+    }
+  },
+  "skip_keys": [
+    "timestamp",
+    "datetime",
+    "info"
+  ],
+  "tolerance": {
+    "percentage": 0.001,
+    "average": 0.001
+  }
+}

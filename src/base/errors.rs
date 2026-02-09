@@ -137,6 +137,11 @@ pub enum CcxtError {
     #[error("null response: {0}")]
     NullResponse(String),
 
+    // === WebSocket Errors ===
+    /// WebSocket connection error
+    #[error("ws connection error: {0}")]
+    WsConnectionError(String),
+
     // === Internal Errors ===
     /// Failed to parse exchange response
     #[error("parse error: {0}")]

@@ -108,6 +108,7 @@ pub fn parse_markets(meta: &HlMeta, asset_ctxs: Option<&[HlAssetCtx]>) -> Result
             });
 
         markets.push(Market {
+            id: asset.name.clone(),
             symbol,
             base: asset.name.clone(),
             quote: "USD".to_string(),
@@ -493,6 +494,10 @@ pub fn parse_positions(state: &HlClearinghouseState) -> Result<Vec<Position>> {
                 stop_loss_price: None,
                 take_profit_price: None,
                 hedged: None,
+                maintenance_margin_percentage: None,
+                initial_margin_percentage: None,
+                last_update_timestamp: None,
+                last_price: None,
                 info: None,
             }))
         })
@@ -517,10 +522,20 @@ pub fn parse_balances(state: &HlClearinghouseState) -> Result<Balances> {
         Balance::new("USDC".to_string(), withdrawable, used),
     );
 
+    let mut free = HashMap::new();
+    let mut used_map = HashMap::new();
+    let mut total = HashMap::new();
+    free.insert("USDC".to_string(), withdrawable);
+    used_map.insert("USDC".to_string(), used);
+    total.insert("USDC".to_string(), account_value);
+
     Ok(Balances {
         timestamp: now,
         datetime: timestamp_to_iso8601(now),
         balances,
+        free,
+        used: used_map,
+        total,
         info: None,
     })
 }
@@ -707,6 +722,147 @@ pub fn parse_order_response(
 }
 
 // ============================================================================
+// Frontend order parsing (fetch_orders / fetch_closed_orders)
+// ============================================================================
+
+/// Parse frontendOpenOrders response into unified Order list.
+pub fn parse_frontend_orders(orders: &[HlFrontendOpenOrder]) -> Result<Vec<Order>> {
+    orders
+        .iter()
+        .map(|o| {
+            let side = parse_side(&o.side)?;
+            let price = parse_decimal(&o.limit_px, "limitPx")?;
+            let sz = parse_decimal(&o.sz, "sz")?;
+            let symbol = symbol_from_hyperliquid(&o.coin);
+
+            let orig_sz = o
+                .orig_sz
+                .as_ref()
+                .and_then(|s| Decimal::from_str(s).ok())
+                .unwrap_or(sz);
+
+            let filled = if sz < orig_sz {
+                Some(orig_sz - sz)
+            } else {
+                None
+            };
+
+            let order_type = match o.order_type.as_deref() {
+                Some("Market") => OrderType::Market,
+                _ => OrderType::Limit,
+            };
+
+            let tif = o.tif.as_deref().map(parse_time_in_force);
+
+            Ok(Order {
+                id: o.oid.to_string(),
+                client_order_id: o.cloid.clone(),
+                symbol,
+                order_type,
+                side,
+                status: OrderStatus::Open,
+                timestamp: o.timestamp as i64,
+                datetime: timestamp_to_iso8601(o.timestamp as i64),
+                last_trade_timestamp: None,
+                price: Some(price),
+                average: None,
+                amount: orig_sz,
+                filled,
+                remaining: Some(sz),
+                cost: None,
+                fee: None,
+                time_in_force: tif,
+                post_only: tif.map(|t| t == TimeInForce::PostOnly),
+                reduce_only: o.reduce_only,
+                stop_price: None,
+                trigger_price: None,
+                stop_loss_price: None,
+                take_profit_price: None,
+                last_update_timestamp: None,
+                trades: None,
+                info: None,
+            })
+        })
+        .collect()
+}
+
+/// Reconstruct closed orders from userFills, grouping by order ID.
+pub fn parse_closed_orders_from_fills(fills: &[HlUserFill]) -> Result<Vec<Order>> {
+    use std::collections::HashMap as StdMap;
+
+    let mut order_map: StdMap<u64, Order> = StdMap::new();
+
+    for fill in fills {
+        let price = parse_decimal(&fill.px, "price")?;
+        let amount = parse_decimal(&fill.sz, "size")?;
+        let cost = price * amount;
+        let side = parse_side(&fill.side)?;
+        let symbol = symbol_from_hyperliquid(&fill.coin);
+        let fee_cost = parse_decimal(&fill.fee, "fee")?;
+
+        let entry = order_map.entry(fill.oid).or_insert_with(|| Order {
+            id: fill.oid.to_string(),
+            client_order_id: None,
+            symbol: symbol.clone(),
+            order_type: OrderType::Limit,
+            side,
+            status: OrderStatus::Closed,
+            timestamp: fill.time as i64,
+            datetime: timestamp_to_iso8601(fill.time as i64),
+            last_trade_timestamp: None,
+            price: Some(price),
+            average: None,
+            amount: Decimal::ZERO,
+            filled: Some(Decimal::ZERO),
+            remaining: Some(Decimal::ZERO),
+            cost: Some(Decimal::ZERO),
+            fee: Some(OrderFee {
+                cost: Decimal::ZERO,
+                currency: fill.fee_token.clone(),
+                rate: None,
+            }),
+            time_in_force: None,
+            post_only: None,
+            reduce_only: None,
+            stop_price: None,
+            trigger_price: None,
+            stop_loss_price: None,
+            take_profit_price: None,
+            last_update_timestamp: None,
+            trades: None,
+            info: None,
+        });
+
+        // Accumulate fills into the order
+        entry.amount += amount;
+        if let Some(ref mut filled) = entry.filled {
+            *filled += amount;
+        }
+        if let Some(ref mut c) = entry.cost {
+            *c += cost;
+        }
+        if let Some(ref mut fee) = entry.fee {
+            fee.cost += fee_cost;
+        }
+        // Update last trade timestamp
+        entry.last_trade_timestamp = Some(fill.time as i64);
+    }
+
+    // Compute average price from cost/filled
+    for order in order_map.values_mut() {
+        if let (Some(cost), Some(filled)) = (order.cost, order.filled) {
+            if !filled.is_zero() {
+                order.average = Some(cost / filled);
+            }
+        }
+    }
+
+    let mut orders: Vec<Order> = order_map.into_values().collect();
+    orders.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    Ok(orders)
+}
+
+// ============================================================================
 // Funding rate parsing
 // ============================================================================
 
@@ -740,6 +896,26 @@ pub fn parse_funding_rate(entries: &[HlFundingEntry], unified_symbol: &str) -> R
     })
 }
 
+/// Parse fundingHistory response into a list of FundingRateHistory entries.
+pub fn parse_funding_rate_history(
+    entries: &[HlFundingEntry],
+    unified_symbol: &str,
+) -> Result<Vec<FundingRateHistory>> {
+    entries
+        .iter()
+        .map(|entry| {
+            let rate = parse_decimal(&entry.funding_rate, "fundingRate")?;
+            Ok(FundingRateHistory {
+                symbol: unified_symbol.to_string(),
+                funding_rate: rate,
+                timestamp: entry.time as i64,
+                datetime: timestamp_to_iso8601(entry.time as i64),
+                info: None,
+            })
+        })
+        .collect()
+}
+
 /// Parse funding rate from asset context (live data).
 pub fn parse_funding_rate_from_ctx(
     ctx: &HlAssetCtx,
@@ -770,6 +946,31 @@ pub fn parse_funding_rate_from_ctx(
         next_funding_datetime: None,
         info: None,
     })
+}
+
+// ============================================================================
+// Leverage tier parsing
+// ============================================================================
+
+/// Parse meta into leverage tiers, keyed by unified symbol.
+pub fn parse_leverage_tiers(meta: &HlMeta) -> HashMap<String, Vec<LeverageTier>> {
+    let mut result = HashMap::new();
+
+    for asset in &meta.universe {
+        let symbol = symbol_from_hyperliquid(&asset.name);
+        let tier = LeverageTier {
+            tier: 1,
+            currency: Some("USDC".to_string()),
+            min_notional: Some(Decimal::ZERO),
+            max_notional: None,
+            maintenance_margin_rate: None,
+            max_leverage: Some(Decimal::from(asset.max_leverage)),
+            info: None,
+        };
+        result.insert(symbol, vec![tier]);
+    }
+
+    result
 }
 
 // ============================================================================
@@ -906,6 +1107,188 @@ mod tests {
         assert_eq!(timeframe_to_hyperliquid(Timeframe::OneMinute).unwrap(), "1m");
         assert_eq!(timeframe_to_hyperliquid(Timeframe::OneHour).unwrap(), "1h");
         assert_eq!(timeframe_to_hyperliquid(Timeframe::OneDay).unwrap(), "1d");
+    }
+
+    #[test]
+    fn test_parse_frontend_orders() {
+        let orders = vec![
+            HlFrontendOpenOrder {
+                coin: "BTC".to_string(),
+                side: "B".to_string(),
+                limit_px: "95000.0".to_string(),
+                sz: "0.5".to_string(),
+                oid: 12345,
+                timestamp: 1707000000000,
+                orig_sz: Some("1.0".to_string()),
+                cloid: Some("my-order-1".to_string()),
+                order_type: Some("Limit".to_string()),
+                tif: Some("Gtc".to_string()),
+                reduce_only: Some(false),
+            },
+            HlFrontendOpenOrder {
+                coin: "ETH".to_string(),
+                side: "A".to_string(),
+                limit_px: "3800.0".to_string(),
+                sz: "10.0".to_string(),
+                oid: 12346,
+                timestamp: 1707000001000,
+                orig_sz: None,
+                cloid: None,
+                order_type: None,
+                tif: None,
+                reduce_only: None,
+            },
+        ];
+
+        let parsed = parse_frontend_orders(&orders).unwrap();
+        assert_eq!(parsed.len(), 2);
+
+        // First order: partially filled
+        assert_eq!(parsed[0].symbol, "BTC/USD:USDC");
+        assert_eq!(parsed[0].side, OrderSide::Buy);
+        assert_eq!(parsed[0].amount, Decimal::from_str("1.0").unwrap());
+        assert_eq!(parsed[0].remaining, Some(Decimal::from_str("0.5").unwrap()));
+        assert_eq!(parsed[0].filled, Some(Decimal::from_str("0.5").unwrap()));
+        assert_eq!(parsed[0].client_order_id, Some("my-order-1".to_string()));
+        assert_eq!(parsed[0].order_type, OrderType::Limit);
+
+        // Second order: no orig_sz
+        assert_eq!(parsed[1].symbol, "ETH/USD:USDC");
+        assert_eq!(parsed[1].side, OrderSide::Sell);
+        assert_eq!(parsed[1].amount, Decimal::from_str("10.0").unwrap());
+        assert_eq!(parsed[1].filled, None); // sz == orig_sz
+    }
+
+    #[test]
+    fn test_parse_closed_orders_from_fills() {
+        let fills = vec![
+            HlUserFill {
+                coin: "BTC".to_string(),
+                px: "95000.0".to_string(),
+                sz: "0.5".to_string(),
+                side: "B".to_string(),
+                time: 1707000000000,
+                oid: 100,
+                tid: 1,
+                fee: "0.5".to_string(),
+                fee_token: "USDC".to_string(),
+                start_position: None,
+                dir: None,
+                closed_pnl: None,
+                crossed: Some(true),
+                hash: None,
+            },
+            HlUserFill {
+                coin: "BTC".to_string(),
+                px: "95100.0".to_string(),
+                sz: "0.5".to_string(),
+                side: "B".to_string(),
+                time: 1707000001000,
+                oid: 100, // Same order
+                tid: 2,
+                fee: "0.3".to_string(),
+                fee_token: "USDC".to_string(),
+                start_position: None,
+                dir: None,
+                closed_pnl: None,
+                crossed: Some(false),
+                hash: None,
+            },
+        ];
+
+        let orders = parse_closed_orders_from_fills(&fills).unwrap();
+        assert_eq!(orders.len(), 1);
+
+        let order = &orders[0];
+        assert_eq!(order.id, "100");
+        assert_eq!(order.symbol, "BTC/USD:USDC");
+        assert_eq!(order.status, OrderStatus::Closed);
+        assert_eq!(order.amount, Decimal::from_str("1.0").unwrap());
+        assert_eq!(order.filled, Some(Decimal::from_str("1.0").unwrap()));
+        // Cost = 0.5*95000 + 0.5*95100 = 47500 + 47550 = 95050
+        assert_eq!(order.cost, Some(Decimal::from_str("95050.0").unwrap()));
+        // Average = 95050 / 1.0 = 95050
+        assert_eq!(order.average, Some(Decimal::from_str("95050.0").unwrap()));
+        // Fee = 0.5 + 0.3 = 0.8
+        assert_eq!(order.fee.as_ref().unwrap().cost, Decimal::from_str("0.8").unwrap());
+    }
+
+    #[test]
+    fn test_parse_funding_rate_history() {
+        let entries = vec![
+            HlFundingEntry {
+                coin: "BTC".to_string(),
+                funding_rate: "0.0001".to_string(),
+                premium: "0.00005".to_string(),
+                time: 1707000000000,
+            },
+            HlFundingEntry {
+                coin: "BTC".to_string(),
+                funding_rate: "0.0002".to_string(),
+                premium: "0.00008".to_string(),
+                time: 1707003600000,
+            },
+        ];
+
+        let history = parse_funding_rate_history(&entries, "BTC/USD:USDC").unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].symbol, "BTC/USD:USDC");
+        assert_eq!(history[0].funding_rate, Decimal::from_str("0.0001").unwrap());
+        assert_eq!(history[1].funding_rate, Decimal::from_str("0.0002").unwrap());
+    }
+
+    #[test]
+    fn test_parse_leverage_tiers() {
+        let meta = HlMeta {
+            universe: vec![
+                HlAssetInfo {
+                    name: "BTC".to_string(),
+                    sz_decimals: 5,
+                    max_leverage: 50,
+                },
+                HlAssetInfo {
+                    name: "ETH".to_string(),
+                    sz_decimals: 4,
+                    max_leverage: 25,
+                },
+            ],
+        };
+
+        let tiers = parse_leverage_tiers(&meta);
+        assert_eq!(tiers.len(), 2);
+
+        let btc_tiers = tiers.get("BTC/USD:USDC").unwrap();
+        assert_eq!(btc_tiers.len(), 1);
+        assert_eq!(btc_tiers[0].max_leverage, Some(Decimal::from(50)));
+
+        let eth_tiers = tiers.get("ETH/USD:USDC").unwrap();
+        assert_eq!(eth_tiers[0].max_leverage, Some(Decimal::from(25)));
+    }
+
+    #[test]
+    fn test_trigger_order_wire_serialization() {
+        let wire = HlOrderWire {
+            a: 0,
+            b: true,
+            p: "95000.0".to_string(),
+            s: "0.01".to_string(),
+            r: true,
+            t: HlOrderTypeWire::Trigger {
+                trigger: HlTriggerOrder {
+                    is_market: true,
+                    trigger_px: "94000.0".to_string(),
+                    tpsl: "sl".to_string(),
+                },
+            },
+            c: None,
+        };
+
+        let json = serde_json::to_value(&wire).unwrap();
+        let trigger = json.get("t").and_then(|t| t.get("trigger")).unwrap();
+        assert_eq!(trigger["isMarket"], true);
+        assert_eq!(trigger["triggerPx"], "94000.0");
+        assert_eq!(trigger["tpsl"], "sl");
+        assert_eq!(json["r"], true); // reduce_only for stop-loss
     }
 
     #[test]

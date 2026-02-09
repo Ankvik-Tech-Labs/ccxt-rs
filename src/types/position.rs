@@ -93,6 +93,22 @@ pub struct Position {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hedged: Option<bool>,
 
+    /// Maintenance margin percentage
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maintenance_margin_percentage: Option<Decimal>,
+
+    /// Initial margin percentage
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial_margin_percentage: Option<Decimal>,
+
+    /// Last update timestamp (milliseconds)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_update_timestamp: Option<i64>,
+
+    /// Last price
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_price: Option<Decimal>,
+
     /// Raw exchange response
     #[serde(skip_serializing_if = "Option::is_none")]
     pub info: Option<serde_json::Value>,
