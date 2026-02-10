@@ -1,5 +1,7 @@
 # ccxt-rs: Unified Rust API for Cryptocurrency Exchange Trading
 
+[![CI](https://github.com/Ankvik-Tech-Labs/ccxt-rs/workflows/CI/badge.svg)](https://github.com/Ankvik-Tech-Labs/ccxt-rs/actions)
+[![Security Audit](https://github.com/Ankvik-Tech-Labs/ccxt-rs/workflows/Security%20Audit/badge.svg)](https://github.com/Ankvik-Tech-Labs/ccxt-rs/actions)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-blue.svg?maxAge=3600)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
