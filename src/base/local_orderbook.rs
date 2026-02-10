@@ -1,0 +1,235 @@
+//! Local order book manager for WebSocket incremental updates.
+//!
+//! This module provides `LocalOrderBook`, a structure that maintains a real-time
+//! order book state by applying incremental updates from WebSocket streams.
+//! It uses `BTreeMap` for efficient price-level storage and retrieval.
+
+use rust_decimal::Decimal;
+use std::collections::BTreeMap;
+
+/// Local order book that maintains bid/ask price levels.
+///
+/// Stores bids and asks in `BTreeMap` for O(log n) insertions/deletions
+/// and efficient sorted iteration. Bids are retrieved in descending order,
+/// asks in ascending order.
+#[derive(Debug, Clone)]
+pub struct LocalOrderBook {
+    /// Trading pair symbol (e.g., "BTC/USDT")
+    symbol: String,
+    /// Bid price levels: price -> quantity
+    bids: BTreeMap<Decimal, Decimal>,
+    /// Ask price levels: price -> quantity
+    asks: BTreeMap<Decimal, Decimal>,
+    /// Sequence number for update ordering (exchange-specific)
+    nonce: Option<u64>,
+    /// Last update timestamp (milliseconds since epoch)
+    timestamp: i64,
+}
+
+impl LocalOrderBook {
+    /// Creates a new empty order book for the given symbol.
+    ///
+    /// # Arguments
+    /// * `symbol` - Trading pair symbol (e.g., "BTC/USDT")
+    ///
+    /// # Returns
+    /// A new `LocalOrderBook` with empty bid/ask maps and no nonce.
+    pub fn new(symbol: String) -> Self {
+        Self {
+            symbol,
+            bids: BTreeMap::new(),
+            asks: BTreeMap::new(),
+            nonce: None,
+            timestamp: 0,
+        }
+    }
+
+    /// Returns the trading pair symbol.
+    pub fn symbol(&self) -> &str {
+        &self.symbol
+    }
+
+    /// Returns all bids sorted by price descending (highest first).
+    ///
+    /// # Returns
+    /// Vector of (price, quantity) tuples in descending price order.
+    pub fn bids(&self) -> Vec<(Decimal, Decimal)> {
+        self.bids.iter().rev().map(|(p, q)| (*p, *q)).collect()
+    }
+
+    /// Returns all asks sorted by price ascending (lowest first).
+    ///
+    /// # Returns
+    /// Vector of (price, quantity) tuples in ascending price order.
+    pub fn asks(&self) -> Vec<(Decimal, Decimal)> {
+        self.asks.iter().map(|(p, q)| (*p, *q)).collect()
+    }
+
+    /// Returns the current nonce (sequence number) if available.
+    pub fn nonce(&self) -> Option<u64> {
+        self.nonce
+    }
+
+    /// Returns the last update timestamp in milliseconds.
+    pub fn timestamp(&self) -> i64 {
+        self.timestamp
+    }
+
+    /// Resets the order book with a full snapshot.
+    ///
+    /// Clears all existing bid/ask levels and replaces them with the provided snapshot data.
+    /// Only inserts levels with non-zero quantities.
+    ///
+    /// # Arguments
+    /// * `bids` - Bid price levels (price, quantity)
+    /// * `asks` - Ask price levels (price, quantity)
+    /// * `nonce` - Optional sequence number for this snapshot
+    /// * `timestamp` - Snapshot timestamp in milliseconds
+    pub fn reset(
+        &mut self,
+        bids: Vec<(Decimal, Decimal)>,
+        asks: Vec<(Decimal, Decimal)>,
+        nonce: Option<u64>,
+        timestamp: i64,
+    ) {
+        self.bids.clear();
+        self.asks.clear();
+
+        for (price, amount) in bids {
+            if !amount.is_zero() {
+                self.bids.insert(price, amount);
+            }
+        }
+
+        for (price, amount) in asks {
+            if !amount.is_zero() {
+                self.asks.insert(price, amount);
+            }
+        }
+
+        self.nonce = nonce;
+        self.timestamp = timestamp;
+    }
+
+    /// Updates bid levels with delta changes.
+    ///
+    /// For each (price, amount) update:
+    /// - If amount is zero, removes the price level
+    /// - Otherwise, inserts or updates the price level
+    ///
+    /// # Arguments
+    /// * `updates` - Array of (price, amount) tuples to apply
+    pub fn update_bids(&mut self, updates: &[(Decimal, Decimal)]) {
+        for (price, amount) in updates {
+            if amount.is_zero() {
+                self.bids.remove(price);
+            } else {
+                self.bids.insert(*price, *amount);
+            }
+        }
+    }
+
+    /// Updates ask levels with delta changes.
+    ///
+    /// For each (price, amount) update:
+    /// - If amount is zero, removes the price level
+    /// - Otherwise, inserts or updates the price level
+    ///
+    /// # Arguments
+    /// * `updates` - Array of (price, amount) tuples to apply
+    pub fn update_asks(&mut self, updates: &[(Decimal, Decimal)]) {
+        for (price, amount) in updates {
+            if amount.is_zero() {
+                self.asks.remove(price);
+            } else {
+                self.asks.insert(*price, *amount);
+            }
+        }
+    }
+
+    /// Sets the sequence number (nonce) for update ordering.
+    ///
+    /// # Arguments
+    /// * `nonce` - The sequence number to set
+    pub fn set_nonce(&mut self, nonce: u64) {
+        self.nonce = Some(nonce);
+    }
+
+    /// Sets the last update timestamp.
+    ///
+    /// # Arguments
+    /// * `timestamp` - Timestamp in milliseconds since epoch
+    pub fn set_timestamp(&mut self, timestamp: i64) {
+        self.timestamp = timestamp;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_orderbook() {
+        let ob = LocalOrderBook::new("BTC/USDT".to_string());
+        assert_eq!(ob.symbol(), "BTC/USDT");
+        assert!(ob.bids().is_empty());
+        assert!(ob.asks().is_empty());
+        assert_eq!(ob.nonce(), None);
+    }
+
+    #[test]
+    fn test_reset_from_snapshot() {
+        let mut ob = LocalOrderBook::new("BTC/USDT".to_string());
+        ob.reset(
+            vec![(Decimal::new(50000, 0), Decimal::new(1, 0))],
+            vec![(Decimal::new(50100, 0), Decimal::new(2, 0))],
+            Some(100),
+            1234567890,
+        );
+        assert_eq!(ob.bids(), vec![(Decimal::new(50000, 0), Decimal::new(1, 0))]);
+        assert_eq!(ob.asks(), vec![(Decimal::new(50100, 0), Decimal::new(2, 0))]);
+        assert_eq!(ob.nonce(), Some(100));
+        assert_eq!(ob.timestamp(), 1234567890);
+    }
+
+    #[test]
+    fn test_apply_delta_update_level() {
+        let mut ob = LocalOrderBook::new("BTC/USDT".to_string());
+        ob.reset(
+            vec![(Decimal::new(50000, 0), Decimal::new(1, 0))],
+            vec![],
+            None,
+            0,
+        );
+        ob.update_bids(&[(Decimal::new(50000, 0), Decimal::new(5, 0))]);
+        assert_eq!(ob.bids(), vec![(Decimal::new(50000, 0), Decimal::new(5, 0))]);
+    }
+
+    #[test]
+    fn test_apply_delta_add_level() {
+        let mut ob = LocalOrderBook::new("BTC/USDT".to_string());
+        ob.reset(vec![], vec![], None, 0);
+        ob.update_asks(&[(Decimal::new(51000, 0), Decimal::new(3, 0))]);
+        assert_eq!(ob.asks(), vec![(Decimal::new(51000, 0), Decimal::new(3, 0))]);
+    }
+
+    #[test]
+    fn test_apply_delta_remove_level() {
+        let mut ob = LocalOrderBook::new("BTC/USDT".to_string());
+        ob.reset(
+            vec![(Decimal::new(50000, 0), Decimal::new(1, 0))],
+            vec![],
+            None,
+            0,
+        );
+        ob.update_bids(&[(Decimal::new(50000, 0), Decimal::ZERO)]);
+        assert!(ob.bids().is_empty());
+    }
+
+    #[test]
+    fn test_set_nonce() {
+        let mut ob = LocalOrderBook::new("BTC/USDT".to_string());
+        ob.set_nonce(42);
+        assert_eq!(ob.nonce(), Some(42));
+    }
+}

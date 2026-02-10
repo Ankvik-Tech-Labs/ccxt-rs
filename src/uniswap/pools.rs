@@ -452,8 +452,8 @@ mod tests {
     #[test]
     fn test_sqrt_price_conversion() {
         // Known sqrtPriceX96 value for USDC/WETH
-        // This is an example - actual values will vary
-        let sqrt_price_x96: u128 = 1461446703485210103287273052203988822378723970342;
+        // This is an example - actual values will vary (using valid u128)
+        let sqrt_price_x96: u128 = 79228162514264337593543950336; // 2^96
 
         // USDC has 6 decimals, WETH has 18 decimals
         let result = sqrt_price_x96_to_price(sqrt_price_x96, 6, 18, false);
