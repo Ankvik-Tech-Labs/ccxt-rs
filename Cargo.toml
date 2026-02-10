@@ -32,6 +32,9 @@ hex = "0.4"
 # Timestamps
 chrono = { version = "0.4", features = ["serde"] }
 
+# Checksum validation
+crc32fast = "1.4"
+
 # URL encoding
 urlencoding = "2.1"
 

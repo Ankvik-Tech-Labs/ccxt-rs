@@ -1637,6 +1637,7 @@ dependencies = [
  "async-trait",
  "base64",
  "chrono",
+ "crc32fast",
  "futures-util",
  "governor",
  "graphql_client",
