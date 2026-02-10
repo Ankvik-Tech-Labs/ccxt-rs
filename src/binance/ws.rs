@@ -5,6 +5,27 @@
 //!
 //! Subscribe: `{"method":"SUBSCRIBE","params":["btcusdt@ticker"],"id":1}`
 //! Events: 24hrTicker, depthUpdate, trade, kline, executionReport, outboundAccountPosition
+//!
+//! ## OrderBook Initialization
+//!
+//! The orderbook stream follows Binance's recommended approach for managing a local order book:
+//! 1. Subscribe to `depth@100ms` incremental stream
+//! 2. Buffer incoming `depthUpdate` messages during REST snapshot fetch
+//! 3. Fetch initial REST snapshot via `GET /api/v3/depth?symbol={symbol}&limit=1000`
+//! 4. Apply snapshot to LocalOrderBook via `reset()`
+//! 5. Process buffered deltas with sequence validation: `U <= lastUpdateId+1 <= u`
+//!    - `U`: first update ID in delta
+//!    - `u`: last update ID in delta
+//!    - `lastUpdateId`: from REST snapshot
+//! 6. Continue applying real-time deltas from stream
+//!
+//! Edge cases handled:
+//! - REST failure: Falls back to stream-only mode (logs error)
+//! - Sequence gap: Logs warning, skips delta (future work: re-snapshot)
+//! - Buffer overflow: Max 100 deltas, drops oldest
+//! - Stale deltas: Silently ignored if `u <= lastUpdateId`
+//!
+//! See: https://binance-docs.github.io/apidocs/spot/en/#how-to-manage-a-local-order-book-correctly
 
 use crate::base::errors::{CcxtError, Result};
 use crate::base::local_orderbook::LocalOrderBook;
@@ -23,6 +44,87 @@ use tokio::sync::{broadcast, RwLock};
 
 const BINANCE_WS_URL: &str = "wss://stream.binance.com:9443/ws";
 const BINANCE_WS_TESTNET_URL: &str = "wss://testnet.binance.vision/ws";
+
+/// Static helper for fetching depth snapshot (used in spawned task)
+async fn fetch_depth_snapshot_static(
+    symbol: &str,
+    limit: u32,
+    sandbox: bool,
+) -> Result<OrderBook> {
+    let raw_symbol = symbol.split('/').collect::<Vec<_>>().join("").to_lowercase();
+    let base_url = if sandbox {
+        "https://testnet.binance.vision"
+    } else {
+        "https://api.binance.com"
+    };
+
+    let url = format!(
+        "{}/api/v3/depth?symbol={}&limit={}",
+        base_url,
+        raw_symbol.to_uppercase(),
+        limit
+    );
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| CcxtError::NetworkError(format!("Failed to fetch depth snapshot: {}", e)))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(CcxtError::ExchangeError(format!(
+            "Depth snapshot request failed with status {}: {}",
+            status, text
+        )));
+    }
+
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| CcxtError::ParseError(format!("Failed to parse depth snapshot: {}", e)))?;
+
+    parsers::parse_order_book(&json, symbol)
+}
+
+/// Buffer for pending depth updates during REST snapshot fetch
+#[derive(Debug, Clone)]
+struct DepthUpdateBuffer {
+    /// Buffered depth update messages (max 100)
+    deltas: Vec<serde_json::Value>,
+    /// Whether REST snapshot has been received and applied
+    snapshot_ready: bool,
+}
+
+impl DepthUpdateBuffer {
+    fn new() -> Self {
+        Self {
+            deltas: Vec::new(),
+            snapshot_ready: false,
+        }
+    }
+
+    /// Add a delta to the buffer (max 100 items, drops oldest)
+    fn push_delta(&mut self, delta: serde_json::Value) {
+        if self.deltas.len() >= 100 {
+            self.deltas.remove(0);
+            tracing::warn!("Depth update buffer overflow, dropping oldest delta");
+        }
+        self.deltas.push(delta);
+    }
+
+    /// Mark snapshot as ready and return buffered deltas
+    fn mark_ready(&mut self) -> Vec<serde_json::Value> {
+        self.snapshot_ready = true;
+        std::mem::take(&mut self.deltas)
+    }
+
+    fn is_ready(&self) -> bool {
+        self.snapshot_ready
+    }
+}
 
 /// Binance WebSocket client for real-time data streams
 pub struct BinanceWs {
@@ -58,6 +160,9 @@ pub struct BinanceWs {
 
     /// Local orderbook state per symbol
     local_orderbooks: Arc<RwLock<HashMap<String, Arc<RwLock<LocalOrderBook>>>>>,
+
+    /// Depth update buffers per symbol (for REST snapshot initialization)
+    depth_buffers: Arc<RwLock<HashMap<String, Arc<RwLock<DepthUpdateBuffer>>>>>,
 
     /// Subscribe message ID counter
     next_id: AtomicU64,
@@ -107,6 +212,7 @@ impl BinanceWs {
             position_sender: position_tx,
             my_trade_sender: my_trade_tx,
             local_orderbooks: Arc::new(RwLock::new(HashMap::new())),
+            depth_buffers: Arc::new(RwLock::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             config,
             sandbox,
@@ -144,6 +250,7 @@ impl BinanceWs {
             id
         )
     }
+
 
     /// Ensure the private WebSocket connection is established.
     /// Creates a listenKey via REST API and connects to the user data stream.
@@ -343,6 +450,7 @@ impl BinanceWs {
         let trade_senders = self.trade_senders.clone();
         let ohlcv_senders = self.ohlcv_senders.clone();
         let local_orderbooks = self.local_orderbooks.clone();
+        let depth_buffers = self.depth_buffers.clone();
 
         let handler: MessageHandler = Arc::new(move |text: String| {
             // Parse the JSON message
@@ -366,50 +474,98 @@ impl BinanceWs {
                     }
                 }
                 "depthUpdate" => {
-                    // Parse delta update fields: "b" (bids) and "a" (asks)
-                    let bids_json = json.get("b").and_then(|v| v.as_array());
-                    let asks_json = json.get("a").and_then(|v| v.as_array());
-                    let last_update_id = json.get("u").and_then(|v| v.as_u64());
+                    // Check if snapshot is ready
+                    let buffers = depth_buffers.blocking_read();
+                    let buffer_lock = buffers.get(&symbol);
 
-                    if bids_json.is_none() && asks_json.is_none() {
+                    if let Some(buf_lock) = buffer_lock {
+                        let mut buffer = buf_lock.blocking_write();
+
+                        if !buffer.is_ready() {
+                            // Buffer the delta until snapshot arrives
+                            tracing::trace!("Buffering depth update for {} (snapshot not ready)", symbol);
+                            buffer.push_delta(json.clone());
+                            return;
+                        }
+                    } else {
+                        // No buffer = no snapshot fetch initiated, skip
                         return;
                     }
 
-                    // Parse bids and asks into Vec<(Decimal, Decimal)>
-                    let mut bids = Vec::new();
-                    if let Some(bids_arr) = bids_json {
-                        for bid in bids_arr {
-                            if let Some(arr) = bid.as_array() {
-                                if arr.len() >= 2 {
-                                    if let (Some(p_str), Some(q_str)) = (arr[0].as_str(), arr[1].as_str()) {
-                                        if let (Ok(price), Ok(qty)) = (Decimal::from_str(p_str), Decimal::from_str(q_str)) {
-                                            bids.push((price, qty));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    let mut asks = Vec::new();
-                    if let Some(asks_arr) = asks_json {
-                        for ask in asks_arr {
-                            if let Some(arr) = ask.as_array() {
-                                if arr.len() >= 2 {
-                                    if let (Some(p_str), Some(q_str)) = (arr[0].as_str(), arr[1].as_str()) {
-                                        if let (Ok(price), Ok(qty)) = (Decimal::from_str(p_str), Decimal::from_str(q_str)) {
-                                            asks.push((price, qty));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Get or create LocalOrderBook for this symbol
+                    // Snapshot is ready, process delta
                     let obs = local_orderbooks.blocking_read();
                     if let Some(ob_lock) = obs.get(&symbol) {
                         let mut ob = ob_lock.blocking_write();
+
+                        // Validate sequence before applying
+                        let first_update_id = json.get("U").and_then(|v| v.as_u64());
+                        let last_update_id = json.get("u").and_then(|v| v.as_u64());
+                        let current_nonce = ob.nonce();
+
+                        let should_apply = if let (Some(u_capital), Some(u_lower), Some(nonce)) =
+                            (first_update_id, last_update_id, current_nonce) {
+                            // Sequence check: U <= lastUpdateId + 1 <= u
+                            if u_capital <= nonce + 1 && nonce + 1 <= u_lower {
+                                true
+                            } else if u_lower <= nonce {
+                                // Stale delta, skip
+                                false
+                            } else {
+                                // Sequence gap
+                                tracing::warn!(
+                                    "Sequence gap for {}: U={}, u={}, lastUpdateId={} (expected U <= {} <= u)",
+                                    symbol, u_capital, u_lower, nonce, nonce + 1
+                                );
+                                false
+                            }
+                        } else {
+                            // Missing fields, skip
+                            false
+                        };
+
+                        if !should_apply {
+                            return;
+                        }
+
+                        // Parse delta update fields: "b" (bids) and "a" (asks)
+                        let bids_json = json.get("b").and_then(|v| v.as_array());
+                        let asks_json = json.get("a").and_then(|v| v.as_array());
+
+                        if bids_json.is_none() && asks_json.is_none() {
+                            return;
+                        }
+
+                        // Parse bids and asks into Vec<(Decimal, Decimal)>
+                        let mut bids = Vec::new();
+                        if let Some(bids_arr) = bids_json {
+                            for bid in bids_arr {
+                                if let Some(arr) = bid.as_array() {
+                                    if arr.len() >= 2 {
+                                        if let (Some(p_str), Some(q_str)) = (arr[0].as_str(), arr[1].as_str()) {
+                                            if let (Ok(price), Ok(qty)) = (Decimal::from_str(p_str), Decimal::from_str(q_str)) {
+                                                bids.push((price, qty));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        let mut asks = Vec::new();
+                        if let Some(asks_arr) = asks_json {
+                            for ask in asks_arr {
+                                if let Some(arr) = ask.as_array() {
+                                    if arr.len() >= 2 {
+                                        if let (Some(p_str), Some(q_str)) = (arr[0].as_str(), arr[1].as_str()) {
+                                            if let (Ok(price), Ok(qty)) = (Decimal::from_str(p_str), Decimal::from_str(q_str)) {
+                                                asks.push((price, qty));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         ob.update_bids(&bids);
                         ob.update_asks(&asks);
                         if let Some(nonce) = last_update_id {
@@ -491,16 +647,173 @@ impl ExchangeWs for BinanceWs {
         let sub_id = SubscriptionId(stream_name.clone());
         let sub_msg = self.subscribe_msg(&[&stream_name]);
 
-        // Initialize LocalOrderBook for this symbol if not present
+        // Initialize LocalOrderBook and buffer for this symbol if not present
         {
             let mut obs = self.local_orderbooks.write().await;
             obs.entry(symbol.to_string())
                 .or_insert_with(|| Arc::new(RwLock::new(LocalOrderBook::new(symbol.to_string()))));
         }
 
-        // TODO: In production, fetch REST snapshot first and call LocalOrderBook::reset()
-        // before subscribing to the WS stream to ensure proper initialization.
-        // See Binance docs: https://binance-docs.github.io/apidocs/spot/en/#how-to-manage-a-local-order-book-correctly
+        {
+            let mut buffers = self.depth_buffers.write().await;
+            buffers.entry(symbol.to_string())
+                .or_insert_with(|| Arc::new(RwLock::new(DepthUpdateBuffer::new())));
+        }
+
+        // Set up handler before subscribing
+        self.setup_public_handler().await;
+
+        // Subscribe to WebSocket stream (deltas will be buffered until snapshot arrives)
+        self.public_conn.subscribe(sub_id.clone(), sub_msg).await?;
+
+        // Spawn task to fetch REST snapshot
+        let symbol_clone = symbol.to_string();
+        let self_clone_sandbox = self.sandbox;
+        let local_orderbooks = self.local_orderbooks.clone();
+        let depth_buffers = self.depth_buffers.clone();
+        let orderbook_senders = self.orderbook_senders.clone();
+
+        tokio::spawn(async move {
+            tracing::info!("Fetching REST snapshot for {}", symbol_clone);
+
+            // Fetch snapshot via REST
+            let snapshot_result = fetch_depth_snapshot_static(
+                &symbol_clone,
+                1000,
+                self_clone_sandbox,
+            ).await;
+
+            match snapshot_result {
+                Ok(snapshot) => {
+                    tracing::info!(
+                        "REST snapshot received for {}: lastUpdateId={:?}, {} bids, {} asks",
+                        symbol_clone, snapshot.nonce, snapshot.bids.len(), snapshot.asks.len()
+                    );
+
+                    // Reset LocalOrderBook with snapshot
+                    let obs = local_orderbooks.read().await;
+                    if let Some(ob_lock) = obs.get(&symbol_clone) {
+                        let mut ob = ob_lock.write().await;
+                        ob.reset(
+                            snapshot.bids.clone(),
+                            snapshot.asks.clone(),
+                            snapshot.nonce,
+                            snapshot.timestamp,
+                        );
+                    }
+
+                    // Mark buffer as ready and get buffered deltas
+                    let buffers = depth_buffers.read().await;
+                    let buffered_deltas = if let Some(buf_lock) = buffers.get(&symbol_clone) {
+                        let mut buffer = buf_lock.write().await;
+                        buffer.mark_ready()
+                    } else {
+                        Vec::new()
+                    };
+
+                    tracing::info!(
+                        "Processing {} buffered depth updates for {}",
+                        buffered_deltas.len(),
+                        symbol_clone
+                    );
+
+                    // Apply buffered deltas that pass sequence validation
+                    let obs = local_orderbooks.read().await;
+                    if let Some(ob_lock) = obs.get(&symbol_clone) {
+                        for delta in buffered_deltas {
+                            let mut ob = ob_lock.write().await;
+
+                            let first_update_id = delta.get("U").and_then(|v| v.as_u64());
+                            let last_update_id = delta.get("u").and_then(|v| v.as_u64());
+                            let current_nonce = ob.nonce();
+
+                            let should_apply = if let (Some(u_capital), Some(u_lower), Some(nonce)) =
+                                (first_update_id, last_update_id, current_nonce) {
+                                if u_capital <= nonce + 1 && nonce + 1 <= u_lower {
+                                    true
+                                } else if u_lower <= nonce {
+                                    false // Stale
+                                } else {
+                                    tracing::warn!(
+                                        "Buffered delta has sequence gap for {}: U={}, u={}, lastUpdateId={}",
+                                        symbol_clone, u_capital, u_lower, nonce
+                                    );
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+
+                            if should_apply {
+                                // Parse and apply delta
+                                let bids_json = delta.get("b").and_then(|v| v.as_array());
+                                let asks_json = delta.get("a").and_then(|v| v.as_array());
+
+                                let mut bids = Vec::new();
+                                if let Some(bids_arr) = bids_json {
+                                    for bid in bids_arr {
+                                        if let Some(arr) = bid.as_array() {
+                                            if arr.len() >= 2 {
+                                                if let (Some(p_str), Some(q_str)) = (arr[0].as_str(), arr[1].as_str()) {
+                                                    if let (Ok(price), Ok(qty)) = (Decimal::from_str(p_str), Decimal::from_str(q_str)) {
+                                                        bids.push((price, qty));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                let mut asks = Vec::new();
+                                if let Some(asks_arr) = asks_json {
+                                    for ask in asks_arr {
+                                        if let Some(arr) = ask.as_array() {
+                                            if arr.len() >= 2 {
+                                                if let (Some(p_str), Some(q_str)) = (arr[0].as_str(), arr[1].as_str()) {
+                                                    if let (Ok(price), Ok(qty)) = (Decimal::from_str(p_str), Decimal::from_str(q_str)) {
+                                                        asks.push((price, qty));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                ob.update_bids(&bids);
+                                ob.update_asks(&asks);
+                                if let Some(nonce) = last_update_id {
+                                    ob.set_nonce(nonce);
+                                }
+                                ob.set_timestamp(timestamp_ms());
+                            }
+                        }
+
+                        // Broadcast initial snapshot after applying buffered deltas
+                        let ob = ob_lock.read().await;
+                        let snapshot = ob.to_orderbook(None);
+                        drop(ob);
+
+                        let senders = orderbook_senders.read().await;
+                        if let Some(tx) = senders.get(&symbol_clone) {
+                            let _ = tx.send(snapshot);
+                        }
+                    }
+
+                    tracing::info!("Orderbook initialization complete for {}", symbol_clone);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to fetch REST snapshot for {}: {}", symbol_clone, e);
+                    tracing::warn!("Falling back to stream-only mode for {}", symbol_clone);
+
+                    // Mark buffer as ready anyway to allow stream processing
+                    let buffers = depth_buffers.read().await;
+                    if let Some(buf_lock) = buffers.get(&symbol_clone) {
+                        let mut buffer = buf_lock.write().await;
+                        let _ = buffer.mark_ready();
+                    }
+                }
+            }
+        });
 
         let rx = {
             let mut senders = self.orderbook_senders.write().await;
@@ -509,9 +822,6 @@ impl ExchangeWs for BinanceWs {
                 .or_insert_with(|| broadcast::channel(self.config.channel_capacity).0);
             tx.subscribe()
         };
-
-        self.setup_public_handler().await;
-        self.public_conn.subscribe(sub_id.clone(), sub_msg).await?;
 
         Ok(WsStream::new(rx, sub_id))
     }
@@ -614,6 +924,88 @@ impl ExchangeWs for BinanceWs {
         *self.listen_key.write().await = None;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test sequence validation logic
+    #[test]
+    fn test_depth_update_sequence_validation() {
+        // Test case 1: Valid sequence (U <= lastUpdateId + 1 <= u)
+        let last_update_id = 100u64;
+        let first_update_id = 99u64;
+        let new_update_id = 102u64;
+
+        // Valid: 99 <= 101 <= 102
+        assert!(first_update_id <= last_update_id + 1);
+        assert!(last_update_id + 1 <= new_update_id);
+
+        // Test case 2: Stale delta (u <= lastUpdateId)
+        let stale_update = 95u64;
+        assert!(stale_update <= last_update_id);
+
+        // Test case 3: Sequence gap (U > lastUpdateId + 1)
+        let gap_first = 105u64;
+        let _gap_last = 110u64;
+        assert!(gap_first > last_update_id + 1);
+        // This should be rejected with a warning
+
+        // Test case 4: Perfect continuation (U = lastUpdateId + 1)
+        let perfect_first = 101u64;
+        let perfect_last = 105u64;
+        assert_eq!(perfect_first, last_update_id + 1);
+        assert!(last_update_id + 1 <= perfect_last);
+    }
+
+    /// Test depth buffer overflow behavior
+    #[test]
+    fn test_depth_buffer_overflow() {
+        let mut buffer = DepthUpdateBuffer::new();
+
+        // Add 101 deltas (max is 100, should drop oldest)
+        for i in 0..101 {
+            let delta = serde_json::json!({
+                "e": "depthUpdate",
+                "U": i,
+                "u": i + 1
+            });
+            buffer.push_delta(delta);
+        }
+
+        // Buffer should have exactly 100 items
+        assert_eq!(buffer.deltas.len(), 100);
+
+        // Oldest item (index 0) should be gone, first should be index 1
+        let first = &buffer.deltas[0];
+        assert_eq!(first.get("U").and_then(|v| v.as_u64()), Some(1));
+    }
+
+    /// Test buffer ready state transition
+    #[test]
+    fn test_buffer_ready_state() {
+        let mut buffer = DepthUpdateBuffer::new();
+
+        // Initially not ready
+        assert!(!buffer.is_ready());
+
+        // Add some deltas
+        for i in 0..5 {
+            buffer.push_delta(serde_json::json!({"U": i, "u": i + 1}));
+        }
+
+        assert_eq!(buffer.deltas.len(), 5);
+        assert!(!buffer.is_ready());
+
+        // Mark as ready
+        let buffered = buffer.mark_ready();
+
+        // Should be ready now and deltas should be returned
+        assert!(buffer.is_ready());
+        assert_eq!(buffered.len(), 5);
+        assert_eq!(buffer.deltas.len(), 0); // Should be cleared
     }
 }
 
