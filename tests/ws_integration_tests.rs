@@ -2,9 +2,19 @@
 //!
 //! All tests are #[ignore] and require live network connections.
 //! Public tests connect to real exchange WebSocket endpoints.
+//! Private tests require sandbox credentials via environment variables.
 //!
-//! Run with:
+//! Run public tests:
 //!   cargo test --all-features -- --ignored ws_ --test-threads=1
+//!
+//! Run private tests (example for Binance):
+//!   BINANCE_SANDBOX_API_KEY=... BINANCE_SANDBOX_SECRET=... \
+//!     cargo test --all-features -- --ignored ws_binance_private --test-threads=1
+
+/// Helper: read an env var, return None if missing (test will skip).
+fn env_or_skip(var: &str) -> Option<String> {
+    std::env::var(var).ok()
+}
 
 // =============================================================================
 // BINANCE WEBSOCKET TESTS
@@ -12,6 +22,7 @@
 
 #[cfg(feature = "binance")]
 mod binance_ws {
+    use super::env_or_skip;
     use ccxt::base::ws::{ExchangeWs, WsConfig};
     use ccxt::binance::ws::BinanceWs;
     use std::time::Duration;
@@ -127,6 +138,60 @@ mod binance_ws {
 
         ws.close().await.unwrap();
     }
+
+    // === Private Stream Tests ===
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_binance_private_watch_orders() {
+        let api_key = match env_or_skip("BINANCE_SANDBOX_API_KEY") { Some(k) => k, None => return };
+        let secret = match env_or_skip("BINANCE_SANDBOX_SECRET") { Some(s) => s, None => return };
+
+        let ws = BinanceWs::new(true, WsConfig::default())
+            .with_credentials(api_key, secret);
+
+        let _stream = ws.watch_orders(None).await.expect("Auth/connect failed for watch_orders");
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_binance_private_watch_balance() {
+        let api_key = match env_or_skip("BINANCE_SANDBOX_API_KEY") { Some(k) => k, None => return };
+        let secret = match env_or_skip("BINANCE_SANDBOX_SECRET") { Some(s) => s, None => return };
+
+        let ws = BinanceWs::new(true, WsConfig::default())
+            .with_credentials(api_key, secret);
+
+        let _stream = ws.watch_balance().await.expect("Auth/connect failed for watch_balance");
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_binance_private_watch_my_trades() {
+        let api_key = match env_or_skip("BINANCE_SANDBOX_API_KEY") { Some(k) => k, None => return };
+        let secret = match env_or_skip("BINANCE_SANDBOX_SECRET") { Some(s) => s, None => return };
+
+        let ws = BinanceWs::new(true, WsConfig::default())
+            .with_credentials(api_key, secret);
+
+        let _stream = ws.watch_my_trades(None).await.expect("Auth/connect failed for watch_my_trades");
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_binance_private_watch_positions() {
+        let api_key = match env_or_skip("BINANCE_SANDBOX_API_KEY") { Some(k) => k, None => return };
+        let secret = match env_or_skip("BINANCE_SANDBOX_SECRET") { Some(s) => s, None => return };
+
+        let ws = BinanceWs::new(true, WsConfig::default())
+            .with_credentials(api_key, secret);
+
+        let _stream = ws.watch_positions(None).await.expect("Auth/connect failed for watch_positions");
+        ws.close().await.unwrap();
+    }
 }
 
 // =============================================================================
@@ -135,6 +200,7 @@ mod binance_ws {
 
 #[cfg(feature = "bybit")]
 mod bybit_ws {
+    use super::env_or_skip;
     use ccxt::base::ws::{ExchangeWs, WsConfig};
     use ccxt::bybit::ws::BybitWs;
     use std::time::Duration;
@@ -220,6 +286,60 @@ mod bybit_ws {
 
         ws.close().await.unwrap();
     }
+
+    // === Private Stream Tests ===
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_bybit_private_watch_orders() {
+        let api_key = match env_or_skip("BYBIT_SANDBOX_API_KEY") { Some(k) => k, None => return };
+        let secret = match env_or_skip("BYBIT_SANDBOX_SECRET") { Some(s) => s, None => return };
+
+        let ws = BybitWs::new(true, WsConfig::default())
+            .with_credentials(api_key, secret);
+
+        let _stream = ws.watch_orders(None).await.expect("Auth/connect failed for watch_orders");
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_bybit_private_watch_balance() {
+        let api_key = match env_or_skip("BYBIT_SANDBOX_API_KEY") { Some(k) => k, None => return };
+        let secret = match env_or_skip("BYBIT_SANDBOX_SECRET") { Some(s) => s, None => return };
+
+        let ws = BybitWs::new(true, WsConfig::default())
+            .with_credentials(api_key, secret);
+
+        let _stream = ws.watch_balance().await.expect("Auth/connect failed for watch_balance");
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_bybit_private_watch_positions() {
+        let api_key = match env_or_skip("BYBIT_SANDBOX_API_KEY") { Some(k) => k, None => return };
+        let secret = match env_or_skip("BYBIT_SANDBOX_SECRET") { Some(s) => s, None => return };
+
+        let ws = BybitWs::new(true, WsConfig::default())
+            .with_credentials(api_key, secret);
+
+        let _stream = ws.watch_positions(None).await.expect("Auth/connect failed for watch_positions");
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_bybit_private_watch_my_trades() {
+        let api_key = match env_or_skip("BYBIT_SANDBOX_API_KEY") { Some(k) => k, None => return };
+        let secret = match env_or_skip("BYBIT_SANDBOX_SECRET") { Some(s) => s, None => return };
+
+        let ws = BybitWs::new(true, WsConfig::default())
+            .with_credentials(api_key, secret);
+
+        let _stream = ws.watch_my_trades(None).await.expect("Auth/connect failed for watch_my_trades");
+        ws.close().await.unwrap();
+    }
 }
 
 // =============================================================================
@@ -228,6 +348,7 @@ mod bybit_ws {
 
 #[cfg(feature = "okx")]
 mod okx_ws {
+    use super::env_or_skip;
     use ccxt::base::ws::{ExchangeWs, WsConfig};
     use ccxt::okx::ws::OkxWs;
     use std::time::Duration;
@@ -313,6 +434,64 @@ mod okx_ws {
 
         ws.close().await.unwrap();
     }
+
+    // === Private Stream Tests ===
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_okx_private_watch_orders() {
+        let api_key = match env_or_skip("OKX_SANDBOX_API_KEY") { Some(k) => k, None => return };
+        let secret = match env_or_skip("OKX_SANDBOX_SECRET") { Some(s) => s, None => return };
+        let passphrase = match env_or_skip("OKX_SANDBOX_PASSPHRASE") { Some(p) => p, None => return };
+
+        let ws = OkxWs::new(true, WsConfig::default())
+            .with_credentials(api_key, secret, passphrase);
+
+        let _stream = ws.watch_orders(None).await.expect("Auth/connect failed for watch_orders");
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_okx_private_watch_balance() {
+        let api_key = match env_or_skip("OKX_SANDBOX_API_KEY") { Some(k) => k, None => return };
+        let secret = match env_or_skip("OKX_SANDBOX_SECRET") { Some(s) => s, None => return };
+        let passphrase = match env_or_skip("OKX_SANDBOX_PASSPHRASE") { Some(p) => p, None => return };
+
+        let ws = OkxWs::new(true, WsConfig::default())
+            .with_credentials(api_key, secret, passphrase);
+
+        let _stream = ws.watch_balance().await.expect("Auth/connect failed for watch_balance");
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_okx_private_watch_positions() {
+        let api_key = match env_or_skip("OKX_SANDBOX_API_KEY") { Some(k) => k, None => return };
+        let secret = match env_or_skip("OKX_SANDBOX_SECRET") { Some(s) => s, None => return };
+        let passphrase = match env_or_skip("OKX_SANDBOX_PASSPHRASE") { Some(p) => p, None => return };
+
+        let ws = OkxWs::new(true, WsConfig::default())
+            .with_credentials(api_key, secret, passphrase);
+
+        let _stream = ws.watch_positions(None).await.expect("Auth/connect failed for watch_positions");
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_okx_private_watch_my_trades() {
+        let api_key = match env_or_skip("OKX_SANDBOX_API_KEY") { Some(k) => k, None => return };
+        let secret = match env_or_skip("OKX_SANDBOX_SECRET") { Some(s) => s, None => return };
+        let passphrase = match env_or_skip("OKX_SANDBOX_PASSPHRASE") { Some(p) => p, None => return };
+
+        let ws = OkxWs::new(true, WsConfig::default())
+            .with_credentials(api_key, secret, passphrase);
+
+        let _stream = ws.watch_my_trades(None).await.expect("Auth/connect failed for watch_my_trades");
+        ws.close().await.unwrap();
+    }
 }
 
 // =============================================================================
@@ -321,6 +500,7 @@ mod okx_ws {
 
 #[cfg(feature = "hyperliquid")]
 mod hyperliquid_ws {
+    use super::env_or_skip;
     use ccxt::base::ws::{ExchangeWs, WsConfig};
     use ccxt::hyperliquid::ws::HyperliquidWs;
     use std::time::Duration;
@@ -408,5 +588,64 @@ mod hyperliquid_ws {
         assert_eq!(eth_ticker.symbol, "ETH/USD:USDC");
 
         ws.close().await.unwrap();
+    }
+
+    // === Private Stream Tests ===
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_hyperliquid_private_watch_orders() {
+        let private_key = match env_or_skip("HYPERLIQUID_PRIVATE_KEY") { Some(k) => k, None => return };
+        let signer = ccxt::hyperliquid::signer::HyperliquidSigner::new(&private_key, true)
+            .expect("Failed to create signer");
+        let address = signer.address_hex();
+
+        let ws = HyperliquidWs::new(true, WsConfig::default())
+            .with_user_address(address);
+
+        let _stream = ws.watch_orders(None).await.expect("Connect failed for watch_orders");
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_hyperliquid_private_watch_positions() {
+        let private_key = match env_or_skip("HYPERLIQUID_PRIVATE_KEY") { Some(k) => k, None => return };
+        let signer = ccxt::hyperliquid::signer::HyperliquidSigner::new(&private_key, true)
+            .expect("Failed to create signer");
+        let address = signer.address_hex();
+
+        let ws = HyperliquidWs::new(true, WsConfig::default())
+            .with_user_address(address);
+
+        let _stream = ws.watch_positions(None).await.expect("Connect failed for watch_positions");
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_hyperliquid_private_watch_my_trades() {
+        let private_key = match env_or_skip("HYPERLIQUID_PRIVATE_KEY") { Some(k) => k, None => return };
+        let signer = ccxt::hyperliquid::signer::HyperliquidSigner::new(&private_key, true)
+            .expect("Failed to create signer");
+        let address = signer.address_hex();
+
+        let ws = HyperliquidWs::new(true, WsConfig::default())
+            .with_user_address(address);
+
+        let _stream = ws.watch_my_trades(None).await.expect("Connect failed for watch_my_trades");
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_hyperliquid_watch_balance_not_supported() {
+        let ws = HyperliquidWs::new(false, WsConfig::default());
+        let result = ws.watch_balance().await;
+        match result {
+            Err(ccxt::base::errors::CcxtError::NotSupported(_)) => {} // expected
+            Err(e) => panic!("Expected NotSupported, got: {:?}", e),
+            Ok(_) => panic!("Expected error, got Ok"),
+        }
     }
 }

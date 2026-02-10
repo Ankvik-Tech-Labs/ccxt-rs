@@ -9,7 +9,7 @@
 
 use crate::base::errors::{CcxtError, Result};
 use crate::base::signer::{hmac_sha256_base64, timestamp_ms, timestamp_s, timestamp_to_iso8601};
-use crate::base::ws::{ExchangeWs, SubscriptionId, WsConfig, WsConnectionState, WsStream};
+use crate::base::ws::{ExchangeWs, NowOrNever, SubscriptionId, WsConfig, WsConnectionState, WsStream};
 use crate::base::ws_connection::{WsConnectionManager, MessageHandler};
 use crate::okx::parsers;
 use crate::types::*;
@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
+use tokio::time::Instant;
 
 const OKX_WS_PUBLIC: &str = "wss://ws.okx.com:8443/ws/v5/public";
 const OKX_WS_PRIVATE: &str = "wss://ws.okx.com:8443/ws/v5/private";
@@ -175,10 +176,12 @@ impl OkxWs {
         let balance_sender = self.balance_sender.clone();
         let position_sender = self.position_sender.clone();
         let my_trade_sender = self.my_trade_sender.clone();
+        let last_pong = conn.last_pong_handle();
 
         let handler: MessageHandler = Arc::new(move |text: String| {
             // OKX sends "pong" as plain text response to "ping"
             if text == "pong" {
+                *last_pong.blocking_write() = Some(Instant::now());
                 return;
             }
 
@@ -293,10 +296,12 @@ impl OkxWs {
         let ticker_senders = self.ticker_senders.clone();
         let orderbook_senders = self.orderbook_senders.clone();
         let trade_senders = self.trade_senders.clone();
+        let last_pong = self.public_conn.last_pong_handle();
 
         let handler: MessageHandler = Arc::new(move |text: String| {
             // OKX sends "pong" as plain text response to "ping"
             if text == "pong" {
+                *last_pong.blocking_write() = Some(Instant::now());
                 return;
             }
 
@@ -476,13 +481,14 @@ impl ExchangeWs for OkxWs {
     }
 
     fn connection_state(&self) -> WsConnectionState {
-        WsConnectionState::Disconnected
+        self.public_conn.connection_state().now_or_never()
+            .unwrap_or(WsConnectionState::Disconnected)
     }
 
     async fn close(&self) -> Result<()> {
         self.public_conn.close().await?;
-        let private = self.private_conn.read().await;
-        if let Some(ref conn) = *private {
+        let mut private = self.private_conn.write().await;
+        if let Some(conn) = private.take() {
             conn.close().await?;
         }
         Ok(())

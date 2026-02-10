@@ -7,7 +7,7 @@
 //! Private: `{"method":"subscribe","subscription":{"type":"userEvents","user":"0x..."}}`
 
 use crate::base::errors::{CcxtError, Result};
-use crate::base::ws::{ExchangeWs, SubscriptionId, WsConfig, WsConnectionState, WsStream};
+use crate::base::ws::{ExchangeWs, NowOrNever, SubscriptionId, WsConfig, WsConnectionState, WsStream};
 use crate::base::ws_connection::{WsConnectionManager, MessageHandler};
 use crate::hyperliquid::parsers;
 use crate::hyperliquid::types::{HlL2Book, HlRecentTrade, HlUserFill};
@@ -482,7 +482,8 @@ impl ExchangeWs for HyperliquidWs {
     }
 
     fn connection_state(&self) -> WsConnectionState {
-        WsConnectionState::Disconnected
+        self.conn.connection_state().now_or_never()
+            .unwrap_or(WsConnectionState::Disconnected)
     }
 
     async fn close(&self) -> Result<()> {

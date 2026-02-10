@@ -7,8 +7,34 @@ use crate::base::errors::Result;
 use crate::types::*;
 use async_trait::async_trait;
 use std::fmt;
+use std::future::Future;
+use std::pin::pin;
+use std::task::Poll;
 use std::time::Duration;
 use tokio::sync::broadcast;
+
+/// Helper trait for synchronous polling of an async future.
+///
+/// Useful for calling async methods (e.g., `connection_state()`) from a
+/// synchronous trait method by polling exactly once. Returns `None` if
+/// the future is not immediately ready.
+pub trait NowOrNever {
+    type Output;
+    fn now_or_never(self) -> Option<Self::Output>;
+}
+
+impl<F: Future> NowOrNever for F {
+    type Output = F::Output;
+    fn now_or_never(self) -> Option<Self::Output> {
+        let mut pinned = pin!(self);
+        let waker = futures_util::task::noop_waker();
+        let mut cx = std::task::Context::from_waker(&waker);
+        match pinned.as_mut().poll(&mut cx) {
+            Poll::Ready(v) => Some(v),
+            Poll::Pending => None,
+        }
+    }
+}
 
 /// WebSocket connection state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -9,7 +9,7 @@
 
 use crate::base::errors::{CcxtError, Result};
 use crate::base::signer::{hmac_sha256, timestamp_ms};
-use crate::base::ws::{ExchangeWs, SubscriptionId, WsConfig, WsConnectionState, WsStream};
+use crate::base::ws::{ExchangeWs, NowOrNever, SubscriptionId, WsConfig, WsConnectionState, WsStream};
 use crate::base::ws_connection::{WsConnectionManager, MessageHandler};
 use crate::bybit::parsers;
 use crate::types::*;
@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
+use tokio::time::Instant;
 
 const BYBIT_WS_PUBLIC: &str = "wss://stream.bybit.com/v5/public/spot";
 const BYBIT_WS_PUBLIC_LINEAR: &str = "wss://stream.bybit.com/v5/public/linear";
@@ -166,12 +167,19 @@ impl BybitWs {
         let balance_sender = self.balance_sender.clone();
         let position_sender = self.position_sender.clone();
         let my_trade_sender = self.my_trade_sender.clone();
+        let last_pong = conn.last_pong_handle();
 
         let handler: MessageHandler = Arc::new(move |text: String| {
             let json: serde_json::Value = match serde_json::from_str(&text) {
                 Ok(v) => v,
                 Err(_) => return,
             };
+
+            // Track text-based pong responses for keepalive timeout detection
+            if json.get("op").and_then(|v| v.as_str()) == Some("pong") {
+                *last_pong.blocking_write() = Some(Instant::now());
+                return;
+            }
 
             let topic = json.get("topic").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -265,12 +273,19 @@ impl BybitWs {
         let ticker_senders = self.ticker_senders.clone();
         let orderbook_senders = self.orderbook_senders.clone();
         let trade_senders = self.trade_senders.clone();
+        let last_pong = self.public_conn.last_pong_handle();
 
         let handler: MessageHandler = Arc::new(move |text: String| {
             let json: serde_json::Value = match serde_json::from_str(&text) {
                 Ok(v) => v,
                 Err(_) => return,
             };
+
+            // Track text-based pong responses for keepalive timeout detection
+            if json.get("op").and_then(|v| v.as_str()) == Some("pong") {
+                *last_pong.blocking_write() = Some(Instant::now());
+                return;
+            }
 
             let topic = json.get("topic").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -430,13 +445,14 @@ impl ExchangeWs for BybitWs {
     }
 
     fn connection_state(&self) -> WsConnectionState {
-        WsConnectionState::Disconnected // Sync fallback
+        self.public_conn.connection_state().now_or_never()
+            .unwrap_or(WsConnectionState::Disconnected)
     }
 
     async fn close(&self) -> Result<()> {
         self.public_conn.close().await?;
-        let private = self.private_conn.read().await;
-        if let Some(ref conn) = *private {
+        let mut private = self.private_conn.write().await;
+        if let Some(conn) = private.take() {
             conn.close().await?;
         }
         Ok(())

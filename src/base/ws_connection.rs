@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock};
-use tokio::time;
+use tokio::time::{self, Instant};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
@@ -65,6 +65,9 @@ pub struct WsConnectionManager {
 
     /// Authentication message to send on connect (private streams)
     auth_message: Arc<RwLock<Option<String>>>,
+
+    /// Timestamp of last pong received (for timeout detection)
+    last_pong: Arc<RwLock<Option<Instant>>>,
 }
 
 impl WsConnectionManager {
@@ -80,6 +83,7 @@ impl WsConnectionManager {
             shutdown_tx: Arc::new(Mutex::new(None)),
             ping_message: None,
             auth_message: Arc::new(RwLock::new(None)),
+            last_pong: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -100,6 +104,23 @@ impl WsConnectionManager {
     pub async fn set_message_handler(&self, handler: MessageHandler) {
         let mut h = self.on_message.write().await;
         *h = Some(handler);
+    }
+
+    /// Notify the manager that a pong was received.
+    ///
+    /// Call this from exchange-specific text message handlers when they
+    /// detect a text-based pong response (e.g., Bybit `{"op":"pong"}`,
+    /// OKX `"pong"`).
+    pub async fn notify_pong(&self) {
+        *self.last_pong.write().await = Some(Instant::now());
+    }
+
+    /// Get a clone of the last-pong timestamp handle.
+    ///
+    /// Use this from synchronous message handler closures that need to
+    /// signal pong receipt via `handle.blocking_write()`.
+    pub fn last_pong_handle(&self) -> Arc<RwLock<Option<Instant>>> {
+        self.last_pong.clone()
     }
 
     /// Get the current connection state
@@ -157,6 +178,8 @@ impl WsConnectionManager {
         let subscriptions = self.subscriptions.clone();
         let auth_message = self.auth_message.clone();
         let ping_message = self.ping_message.clone();
+        let last_pong = self.last_pong.clone();
+        let shutdown_tx_arc = self.shutdown_tx.clone();
 
         tokio::spawn(Self::read_loop(
             read,
@@ -169,12 +192,15 @@ impl WsConnectionManager {
             url,
             config,
             ping_message,
+            last_pong,
+            shutdown_tx_arc,
         ));
 
         Ok(())
     }
 
     /// Internal read loop with ping/pong and reconnection
+    #[allow(clippy::too_many_arguments)]
     async fn read_loop(
         mut read: futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -186,6 +212,8 @@ impl WsConnectionManager {
         url: String,
         config: WsConfig,
         ping_message: Option<String>,
+        last_pong: Arc<RwLock<Option<Instant>>>,
+        shutdown_tx: Arc<Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
     ) {
         let mut ping_interval = time::interval(config.ping_interval);
         ping_interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -199,16 +227,33 @@ impl WsConnectionManager {
                     }
                 }
                 _ = ping_interval.tick() => {
+                    // Check pong timeout before sending next ping
+                    {
+                        let lp = last_pong.read().await;
+                        if let Some(ts) = *lp {
+                            if ts.elapsed() > config.pong_timeout {
+                                tracing::warn!("Pong timeout exceeded ({:?}), triggering reconnect", config.pong_timeout);
+                                break;
+                            }
+                        }
+                    }
+
                     // Send ping
                     let mut w = writer.lock().await;
                     if let Some(ref mut sink) = *w {
                         let msg = match &ping_message {
-                            Some(custom) => Message::Text(custom.clone().into()),
-                            None => Message::Ping(vec![].into()),
+                            Some(custom) => Message::Text(custom.clone()),
+                            None => Message::Ping(vec![]),
                         };
                         if let Err(e) = sink.send(msg).await {
                             tracing::warn!("Ping send failed: {}", e);
                             break;
+                        }
+
+                        // Initialize last_pong on first successful ping if still None
+                        let mut lp = last_pong.write().await;
+                        if lp.is_none() {
+                            *lp = Some(Instant::now());
                         }
                     }
                 }
@@ -227,7 +272,7 @@ impl WsConnectionManager {
                             }
                         }
                         Some(Ok(Message::Pong(_))) => {
-                            // Keepalive acknowledged
+                            *last_pong.write().await = Some(Instant::now());
                         }
                         Some(Ok(Message::Close(_))) => {
                             tracing::info!("WebSocket received close frame");
@@ -261,6 +306,8 @@ impl WsConnectionManager {
         // Connection lost — attempt reconnection
         *state.write().await = WsConnectionState::Reconnecting;
         *writer.lock().await = None;
+        // Reset pong tracker for reconnection
+        *last_pong.write().await = None;
 
         let mut delay = config.reconnect_delay;
         let mut attempts = 0u32;
@@ -289,7 +336,7 @@ impl WsConnectionManager {
                         if let Some(auth_msg) = auth.as_ref() {
                             let mut w = writer.lock().await;
                             if let Some(ref mut sink) = *w {
-                                let _ = sink.send(Message::Text(auth_msg.clone().into())).await;
+                                let _ = sink.send(Message::Text(auth_msg.clone())).await;
                             }
                         }
                     }
@@ -300,16 +347,14 @@ impl WsConnectionManager {
                         for sub in subs.values() {
                             let mut w = writer.lock().await;
                             if let Some(ref mut sink) = *w {
-                                let _ = sink.send(Message::Text(sub.subscribe_message.clone().into())).await;
+                                let _ = sink.send(Message::Text(sub.subscribe_message.clone())).await;
                             }
                         }
                     }
 
-                    // Create new shutdown channel for the continued loop
+                    // Create new shutdown channel and store sender so close() works
                     let (new_shutdown_tx, new_shutdown_rx) = tokio::sync::watch::channel(false);
-                    // Note: The old shutdown_tx is lost here; the spawner should
-                    // keep a reference if they need to shut down.
-                    let _ = new_shutdown_tx; // Keep alive
+                    *shutdown_tx.lock().await = Some(new_shutdown_tx);
 
                     // Recurse into read loop with new stream
                     // Use Box::pin to avoid infinite type recursion
@@ -324,6 +369,8 @@ impl WsConnectionManager {
                         url,
                         config,
                         ping_message,
+                        last_pong,
+                        shutdown_tx,
                     ))
                     .await;
                     return;
@@ -346,7 +393,7 @@ impl WsConnectionManager {
             .as_mut()
             .ok_or_else(|| CcxtError::WsConnectionError("Not connected".to_string()))?;
 
-        sink.send(Message::Text(message.into()))
+        sink.send(Message::Text(message))
             .await
             .map_err(|e| CcxtError::WsConnectionError(format!("Send failed: {}", e)))
     }

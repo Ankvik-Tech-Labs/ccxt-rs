@@ -7,8 +7,9 @@
 //! Events: 24hrTicker, depthUpdate, trade, kline, executionReport, outboundAccountPosition
 
 use crate::base::errors::{CcxtError, Result};
+use crate::base::local_orderbook::LocalOrderBook;
 use crate::base::signer::timestamp_ms;
-use crate::base::ws::{ExchangeWs, SubscriptionId, WsConfig, WsConnectionState, WsStream};
+use crate::base::ws::{ExchangeWs, NowOrNever, SubscriptionId, WsConfig, WsConnectionState, WsStream};
 use crate::base::ws_connection::{WsConnectionManager, MessageHandler};
 use crate::binance::parsers;
 use crate::types::*;
@@ -55,6 +56,9 @@ pub struct BinanceWs {
     /// My trades broadcast sender
     my_trade_sender: broadcast::Sender<Trade>,
 
+    /// Local orderbook state per symbol
+    local_orderbooks: Arc<RwLock<HashMap<String, Arc<RwLock<LocalOrderBook>>>>>,
+
     /// Subscribe message ID counter
     next_id: AtomicU64,
 
@@ -71,6 +75,9 @@ pub struct BinanceWs {
 
     /// ListenKey for user data stream
     listen_key: Arc<RwLock<Option<String>>>,
+
+    /// Handle for the listenKey keepalive task (aborted on close)
+    keepalive_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl BinanceWs {
@@ -99,12 +106,14 @@ impl BinanceWs {
             balance_sender: balance_tx,
             position_sender: position_tx,
             my_trade_sender: my_trade_tx,
+            local_orderbooks: Arc::new(RwLock::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             config,
             sandbox,
             api_key: None,
             secret: None,
             listen_key: Arc::new(RwLock::new(None)),
+            keepalive_handle: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -207,7 +216,7 @@ impl BinanceWs {
         let api_key_clone = api_key.clone();
         let base_url_clone = base_url.to_string();
         let listen_key_clone = listen_key;
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let client = reqwest::Client::new();
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30 * 60));
             loop {
@@ -222,6 +231,12 @@ impl BinanceWs {
                     .await;
             }
         });
+
+        // Store handle so we can abort on close
+        {
+            let mut kh = self.keepalive_handle.write().await;
+            *kh = Some(handle);
+        }
 
         Ok(())
     }
@@ -327,6 +342,7 @@ impl BinanceWs {
         let orderbook_senders = self.orderbook_senders.clone();
         let trade_senders = self.trade_senders.clone();
         let ohlcv_senders = self.ohlcv_senders.clone();
+        let local_orderbooks = self.local_orderbooks.clone();
 
         let handler: MessageHandler = Arc::new(move |text: String| {
             // Parse the JSON message
@@ -350,10 +366,63 @@ impl BinanceWs {
                     }
                 }
                 "depthUpdate" => {
-                    if let Ok(ob) = parsers::parse_order_book(&json, &symbol) {
+                    // Parse delta update fields: "b" (bids) and "a" (asks)
+                    let bids_json = json.get("b").and_then(|v| v.as_array());
+                    let asks_json = json.get("a").and_then(|v| v.as_array());
+                    let last_update_id = json.get("u").and_then(|v| v.as_u64());
+
+                    if bids_json.is_none() && asks_json.is_none() {
+                        return;
+                    }
+
+                    // Parse bids and asks into Vec<(Decimal, Decimal)>
+                    let mut bids = Vec::new();
+                    if let Some(bids_arr) = bids_json {
+                        for bid in bids_arr {
+                            if let Some(arr) = bid.as_array() {
+                                if arr.len() >= 2 {
+                                    if let (Some(p_str), Some(q_str)) = (arr[0].as_str(), arr[1].as_str()) {
+                                        if let (Ok(price), Ok(qty)) = (Decimal::from_str(p_str), Decimal::from_str(q_str)) {
+                                            bids.push((price, qty));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let mut asks = Vec::new();
+                    if let Some(asks_arr) = asks_json {
+                        for ask in asks_arr {
+                            if let Some(arr) = ask.as_array() {
+                                if arr.len() >= 2 {
+                                    if let (Some(p_str), Some(q_str)) = (arr[0].as_str(), arr[1].as_str()) {
+                                        if let (Ok(price), Ok(qty)) = (Decimal::from_str(p_str), Decimal::from_str(q_str)) {
+                                            asks.push((price, qty));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Get or create LocalOrderBook for this symbol
+                    let obs = local_orderbooks.blocking_read();
+                    if let Some(ob_lock) = obs.get(&symbol) {
+                        let mut ob = ob_lock.blocking_write();
+                        ob.update_bids(&bids);
+                        ob.update_asks(&asks);
+                        if let Some(nonce) = last_update_id {
+                            ob.set_nonce(nonce);
+                        }
+                        ob.set_timestamp(timestamp_ms());
+
+                        // Broadcast updated orderbook
+                        let snapshot = ob.to_orderbook(None);
+                        drop(ob); // Release lock before sending
                         let senders = orderbook_senders.blocking_read();
                         if let Some(tx) = senders.get(&symbol) {
-                            let _ = tx.send(ob);
+                            let _ = tx.send(snapshot);
                         }
                     }
                 }
@@ -415,12 +484,23 @@ impl ExchangeWs for BinanceWs {
         Ok(WsStream::new(rx, sub_id))
     }
 
-    async fn watch_order_book(&self, symbol: &str, limit: Option<u32>) -> Result<WsStream<OrderBook>> {
+    async fn watch_order_book(&self, symbol: &str, _limit: Option<u32>) -> Result<WsStream<OrderBook>> {
         let stream_sym = Self::stream_symbol(symbol);
-        let depth = limit.unwrap_or(20);
-        let stream_name = format!("{}@depth{}@100ms", stream_sym, depth);
+        // Use incremental depth stream (not snapshot)
+        let stream_name = format!("{}@depth@100ms", stream_sym);
         let sub_id = SubscriptionId(stream_name.clone());
         let sub_msg = self.subscribe_msg(&[&stream_name]);
+
+        // Initialize LocalOrderBook for this symbol if not present
+        {
+            let mut obs = self.local_orderbooks.write().await;
+            obs.entry(symbol.to_string())
+                .or_insert_with(|| Arc::new(RwLock::new(LocalOrderBook::new(symbol.to_string()))));
+        }
+
+        // TODO: In production, fetch REST snapshot first and call LocalOrderBook::reset()
+        // before subscribing to the WS stream to ensure proper initialization.
+        // See Binance docs: https://binance-docs.github.io/apidocs/spot/en/#how-to-manage-a-local-order-book-correctly
 
         let rx = {
             let mut senders = self.orderbook_senders.write().await;
@@ -515,33 +595,25 @@ impl ExchangeWs for BinanceWs {
     }
 
     async fn close(&self) -> Result<()> {
+        // Abort keepalive task to prevent leaking
+        {
+            let mut kh = self.keepalive_handle.write().await;
+            if let Some(handle) = kh.take() {
+                handle.abort();
+            }
+        }
+
         self.public_conn.close().await?;
 
-        let private = self.private_conn.read().await;
-        if let Some(ref conn) = *private {
+        let mut private = self.private_conn.write().await;
+        if let Some(conn) = private.take() {
             conn.close().await?;
         }
+
+        // Clear listen key
+        *self.listen_key.write().await = None;
 
         Ok(())
     }
 }
 
-/// Helper trait for sync access to async state
-trait NowOrNever {
-    type Output;
-    fn now_or_never(self) -> Option<Self::Output>;
-}
-
-impl<F: std::future::Future> NowOrNever for F {
-    type Output = F::Output;
-    fn now_or_never(self) -> Option<Self::Output> {
-        // This is a sync poll — works for RwLock reads that are likely uncontested
-        let mut pinned = std::pin::pin!(self);
-        let waker = futures_util::task::noop_waker();
-        let mut cx = std::task::Context::from_waker(&waker);
-        match pinned.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(v) => Some(v),
-            std::task::Poll::Pending => None,
-        }
-    }
-}
