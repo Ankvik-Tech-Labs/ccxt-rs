@@ -6,9 +6,25 @@
 //! Auth: `{"op":"auth","args":["api_key","expires","signature"]}`
 //! Heartbeat: `{"op":"ping"}` / `{"op":"pong"}`
 //! Subscribe: `{"op":"subscribe","args":["orderbook.50.BTCUSDT"]}`
+//!
+//! ## Orderbook Checksum Validation & Recovery
+//!
+//! Bybit sends a `cs` (checksum) field with each orderbook update. This implementation
+//! validates the local orderbook state against the checksum to detect out-of-sync conditions.
+//!
+//! When a checksum mismatch is detected:
+//! 1. If `WsConfig::auto_recovery_enabled` is true (default), automatic recovery is triggered
+//! 2. The implementation unsubscribes and re-subscribes to the orderbook stream
+//! 3. The exchange sends a fresh snapshot, resetting the local state
+//! 4. Exponential backoff is used for retry delays (1s, 2s, 4s, 8s, max 30s)
+//! 5. Recovery attempts are limited by `WsConfig::max_recovery_attempts` (default: 5)
+//!
+//! Recovery can be disabled by setting `config.auto_recovery_enabled = false`, in which
+//! case checksum mismatches are only logged as warnings.
 
 use crate::base::errors::{CcxtError, Result};
 use crate::base::local_orderbook::LocalOrderBook;
+use crate::base::orderbook_recovery::OrderbookRecovery;
 use crate::base::signer::{hmac_sha256, timestamp_ms};
 use crate::base::ws::{ExchangeWs, NowOrNever, SubscriptionId, WsConfig, WsConnectionState, WsStream};
 use crate::base::ws_connection::{WsConnectionManager, MessageHandler};
@@ -61,6 +77,7 @@ pub struct BybitWs {
     my_trade_sender: broadcast::Sender<Trade>,
 
     local_orderbooks: Arc<RwLock<HashMap<String, Arc<RwLock<LocalOrderBook>>>>>,
+    recovery_state: Arc<RwLock<HashMap<String, OrderbookRecovery>>>,
 
     config: WsConfig,
     sandbox: bool,
@@ -97,6 +114,7 @@ impl BybitWs {
             position_sender: position_tx,
             my_trade_sender: my_trade_tx,
             local_orderbooks: Arc::new(RwLock::new(HashMap::new())),
+            recovery_state: Arc::new(RwLock::new(HashMap::new())),
             config,
             sandbox,
             api_key: None,
@@ -123,6 +141,12 @@ impl BybitWs {
         format!(r#"{{"op":"subscribe","args":[{}]}}"#, args_json.join(","))
     }
 
+    /// Build Bybit unsubscribe message
+    fn unsubscribe_msg(args: &[&str]) -> String {
+        let args_json: Vec<String> = args.iter().map(|a| format!("\"{}\"", a)).collect();
+        format!(r#"{{"op":"unsubscribe","args":[{}]}}"#, args_json.join(","))
+    }
+
     /// Build auth message for private connection
     fn build_auth_message(api_key: &str, secret: &str) -> Result<String> {
         let expires = (timestamp_ms() + 10000).to_string(); // 10s from now
@@ -132,6 +156,33 @@ impl BybitWs {
             r#"{{"op":"auth","args":["{}","{}","{}"]}}"#,
             api_key, expires, signature
         ))
+    }
+
+    /// Trigger orderbook re-subscription to force a new snapshot.
+    ///
+    /// This is used for recovery when checksum validation fails.
+    /// Unsubscribes and immediately re-subscribes to the orderbook stream,
+    /// which causes Bybit to send a fresh snapshot.
+    async fn trigger_resubscribe(&self, symbol: &str, limit: Option<u32>) -> Result<()> {
+        let bybit_sym = Self::stream_symbol(symbol);
+        let depth = limit.unwrap_or(50);
+        let topic = format!("orderbook.{}.{}", depth, bybit_sym);
+
+        tracing::info!("Triggering orderbook re-subscription for {}", symbol);
+
+        // Unsubscribe
+        let unsub_msg = Self::unsubscribe_msg(&[&topic]);
+        self.public_conn.send_raw(unsub_msg).await?;
+
+        // Brief delay to ensure unsubscribe is processed
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Re-subscribe
+        let sub_msg = Self::subscribe_msg(&[&topic]);
+        let sub_id = SubscriptionId(topic);
+        self.public_conn.subscribe(sub_id, sub_msg).await?;
+
+        Ok(())
     }
 
     /// Ensure the private WebSocket connection is established.
@@ -295,6 +346,9 @@ impl BybitWs {
         let orderbook_senders = self.orderbook_senders.clone();
         let trade_senders = self.trade_senders.clone();
         let local_orderbooks = self.local_orderbooks.clone();
+        let recovery_state = self.recovery_state.clone();
+        let config = self.config.clone();
+        let public_conn = self.public_conn.clone();
         let last_pong = self.public_conn.last_pong_handle();
 
         let handler: MessageHandler = Arc::new(move |text: String| {
@@ -391,9 +445,82 @@ impl BybitWs {
                     // Validate checksum if present (Bybit sends `cs` field)
                     if let Some(cs) = data.get("cs").and_then(|v| v.as_u64()) {
                         let valid = book.validate_checksum(cs as u32, bybit_checksum_format);
-                        if !valid {
-                            // Log checksum mismatch but continue
-                            eprintln!("Bybit orderbook checksum mismatch for {}", symbol);
+                        if valid {
+                            // Checksum valid - reset recovery state
+                            let mut recoveries = recovery_state.blocking_write();
+                            if let Some(recovery) = recoveries.get_mut(&symbol) {
+                                recovery.reset();
+                            }
+                        } else if config.auto_recovery_enabled {
+                            // Checksum mismatch - trigger recovery
+                            tracing::warn!("Bybit orderbook checksum mismatch for {}, triggering recovery", symbol);
+
+                            let should_recover = {
+                                let mut recoveries = recovery_state.blocking_write();
+                                let recovery = recoveries.entry(symbol.clone())
+                                    .or_insert_with(|| OrderbookRecovery::new(config.max_recovery_attempts));
+
+                                recovery.record_failure()
+                            };
+
+                            if let Some(delay) = should_recover {
+                                let symbol_owned = symbol.clone();
+                                let public_conn_clone = public_conn.clone();
+                                let failure_count = {
+                                    recovery_state.blocking_read()
+                                        .get(&symbol)
+                                        .map(|r| r.failure_count())
+                                        .unwrap_or(0)
+                                };
+
+                                // Spawn recovery task in detached thread to avoid lifetime issues
+                                std::thread::spawn(move || {
+                                    let rt = tokio::runtime::Handle::try_current();
+                                    if let Ok(handle) = rt {
+                                        handle.spawn(async move {
+                                            // Wait backoff delay
+                                            tokio::time::sleep(delay).await;
+
+                                            tracing::info!(
+                                                "Attempting orderbook recovery for {} (attempt {})",
+                                                symbol_owned,
+                                                failure_count
+                                            );
+
+                                            // Trigger re-subscription
+                                            let bybit_sym = symbol_owned.replace('/', "");
+                                            let depth = 50; // Default depth
+                                            let topic = format!("orderbook.{}.{}", depth, bybit_sym);
+
+                                            // Unsubscribe
+                                            let unsub_msg = format!(r#"{{"op":"unsubscribe","args":["{}"]}}"#, topic);
+                                            if let Err(e) = public_conn_clone.send_raw(unsub_msg).await {
+                                                tracing::error!("Failed to unsubscribe during recovery: {}", e);
+                                                return;
+                                            }
+
+                                            // Brief delay
+                                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                                            // Re-subscribe
+                                            let sub_msg = format!(r#"{{"op":"subscribe","args":["{}"]}}"#, topic);
+                                            let sub_id = SubscriptionId(topic);
+                                            if let Err(e) = public_conn_clone.subscribe(sub_id, sub_msg).await {
+                                                tracing::error!("Failed to re-subscribe during recovery: {}", e);
+                                            }
+                                        });
+                                    }
+                                });
+                            } else {
+                                tracing::error!(
+                                    "Max recovery attempts ({}) reached for {}, stopping recovery",
+                                    config.max_recovery_attempts,
+                                    symbol
+                                );
+                            }
+                        } else {
+                            // Recovery disabled, just log
+                            tracing::warn!("Bybit orderbook checksum mismatch for {} (auto-recovery disabled)", symbol);
                         }
                     }
 

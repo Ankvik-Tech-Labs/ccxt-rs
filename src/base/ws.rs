@@ -75,6 +75,10 @@ pub struct WsConfig {
     pub max_reconnect_attempts: u32,
     /// Channel capacity for broadcast channels
     pub channel_capacity: usize,
+    /// Enable automatic recovery on orderbook checksum failure (default: true)
+    pub auto_recovery_enabled: bool,
+    /// Maximum recovery attempts before giving up (0 = unlimited, default: 5)
+    pub max_recovery_attempts: u32,
 }
 
 impl Default for WsConfig {
@@ -86,6 +90,8 @@ impl Default for WsConfig {
             max_reconnect_delay: Duration::from_secs(30),
             max_reconnect_attempts: 0, // unlimited
             channel_capacity: 256,
+            auto_recovery_enabled: true,
+            max_recovery_attempts: 5,
         }
     }
 }

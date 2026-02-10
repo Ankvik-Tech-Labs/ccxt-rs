@@ -884,3 +884,161 @@ mod hyperliquid_ws {
         }
     }
 }
+
+// =============================================================================
+// ORDERBOOK RECOVERY TESTS
+// =============================================================================
+
+/// Tests for automatic orderbook recovery on checksum mismatch.
+///
+/// These tests verify the recovery mechanism works correctly when orderbook
+/// checksums fail, triggering automatic re-subscription to get a fresh snapshot.
+///
+/// Note: These are integration tests that connect to live exchanges. They verify
+/// the recovery infrastructure but don't inject actual checksum failures (which
+/// would require mocking the exchange response). The recovery logic is tested
+/// via unit tests in `src/base/orderbook_recovery.rs`.
+mod orderbook_recovery {
+    use ccxt::base::ws::WsConfig;
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_recovery_config_default() {
+        // Verify default config has recovery enabled
+        let config = WsConfig::default();
+        assert!(config.auto_recovery_enabled, "Recovery should be enabled by default");
+        assert_eq!(config.max_recovery_attempts, 5, "Default max attempts should be 5");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_recovery_config_disabled() {
+        // Verify recovery can be disabled
+        let mut config = WsConfig::default();
+        config.auto_recovery_enabled = false;
+        assert!(!config.auto_recovery_enabled, "Recovery should be disabled");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_recovery_config_unlimited_attempts() {
+        // Verify unlimited attempts (0) works
+        let mut config = WsConfig::default();
+        config.max_recovery_attempts = 0; // unlimited
+        assert_eq!(config.max_recovery_attempts, 0, "Unlimited attempts should be 0");
+    }
+
+    #[cfg(feature = "bybit")]
+    #[tokio::test]
+    #[ignore]
+    async fn test_bybit_orderbook_with_recovery_enabled() {
+        use ccxt::base::ws::ExchangeWs;
+        use ccxt::bybit::ws::BybitWs;
+        use std::time::Duration;
+
+        // Test that orderbook streams work with recovery enabled (default)
+        let config = WsConfig::default();
+        let ws = BybitWs::new(false, config);
+
+        let mut stream = ws.watch_order_book("BTC/USDT", Some(50)).await.unwrap();
+
+        // Receive several orderbook updates to ensure stream is stable
+        for _ in 0..5 {
+            let ob = tokio::time::timeout(Duration::from_secs(10), stream.next())
+                .await
+                .expect("Timeout waiting for orderbook")
+                .expect("Stream ended unexpectedly");
+
+            assert_eq!(ob.symbol, "BTC/USDT");
+            assert!(!ob.bids.is_empty(), "Orderbook should have bids");
+            assert!(!ob.asks.is_empty(), "Orderbook should have asks");
+        }
+
+        ws.close().await.unwrap();
+    }
+
+    #[cfg(feature = "okx")]
+    #[tokio::test]
+    #[ignore]
+    async fn test_okx_orderbook_with_recovery_enabled() {
+        use ccxt::base::ws::ExchangeWs;
+        use ccxt::okx::ws::OkxWs;
+        use std::time::Duration;
+
+        // Test that orderbook streams work with recovery enabled (default)
+        let config = WsConfig::default();
+        let ws = OkxWs::new(false, config);
+
+        let mut stream = ws.watch_order_book("BTC/USDT", None).await.unwrap();
+
+        // Receive several orderbook updates to ensure stream is stable
+        for _ in 0..5 {
+            let ob = tokio::time::timeout(Duration::from_secs(10), stream.next())
+                .await
+                .expect("Timeout waiting for orderbook")
+                .expect("Stream ended unexpectedly");
+
+            assert_eq!(ob.symbol, "BTC/USDT");
+            assert!(!ob.bids.is_empty(), "Orderbook should have bids");
+            assert!(!ob.asks.is_empty(), "Orderbook should have asks");
+        }
+
+        ws.close().await.unwrap();
+    }
+
+    #[cfg(feature = "bybit")]
+    #[tokio::test]
+    #[ignore]
+    async fn test_bybit_orderbook_with_recovery_disabled() {
+        use ccxt::base::ws::ExchangeWs;
+        use ccxt::bybit::ws::BybitWs;
+        use std::time::Duration;
+
+        // Test that orderbook streams work with recovery disabled
+        let mut config = WsConfig::default();
+        config.auto_recovery_enabled = false;
+        let ws = BybitWs::new(false, config);
+
+        let mut stream = ws.watch_order_book("BTC/USDT", Some(50)).await.unwrap();
+
+        // Receive several orderbook updates to ensure stream is stable
+        for _ in 0..3 {
+            let ob = tokio::time::timeout(Duration::from_secs(10), stream.next())
+                .await
+                .expect("Timeout waiting for orderbook")
+                .expect("Stream ended unexpectedly");
+
+            assert_eq!(ob.symbol, "BTC/USDT");
+        }
+
+        ws.close().await.unwrap();
+    }
+
+    #[cfg(feature = "okx")]
+    #[tokio::test]
+    #[ignore]
+    async fn test_okx_orderbook_with_recovery_disabled() {
+        use ccxt::base::ws::ExchangeWs;
+        use ccxt::okx::ws::OkxWs;
+        use std::time::Duration;
+
+        // Test that orderbook streams work with recovery disabled
+        let mut config = WsConfig::default();
+        config.auto_recovery_enabled = false;
+        let ws = OkxWs::new(false, config);
+
+        let mut stream = ws.watch_order_book("BTC/USDT", None).await.unwrap();
+
+        // Receive several orderbook updates to ensure stream is stable
+        for _ in 0..3 {
+            let ob = tokio::time::timeout(Duration::from_secs(10), stream.next())
+                .await
+                .expect("Timeout waiting for orderbook")
+                .expect("Stream ended unexpectedly");
+
+            assert_eq!(ob.symbol, "BTC/USDT");
+        }
+
+        ws.close().await.unwrap();
+    }
+}

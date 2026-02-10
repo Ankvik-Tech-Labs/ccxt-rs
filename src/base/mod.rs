@@ -17,6 +17,9 @@ pub mod precise;
 pub mod ws;
 pub mod ws_connection;
 pub mod local_orderbook;
+pub mod orderbook_recovery;
+pub mod market_cache;
 
 pub use errors::{CcxtError, Result};
 pub use exchange::{Exchange, ExchangeFeatures, ExchangeType};
+pub use market_cache::MarketCache;
