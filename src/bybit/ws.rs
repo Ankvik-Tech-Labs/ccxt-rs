@@ -8,6 +8,7 @@
 //! Subscribe: `{"op":"subscribe","args":["orderbook.50.BTCUSDT"]}`
 
 use crate::base::errors::{CcxtError, Result};
+use crate::base::local_orderbook::LocalOrderBook;
 use crate::base::signer::{hmac_sha256, timestamp_ms};
 use crate::base::ws::{ExchangeWs, NowOrNever, SubscriptionId, WsConfig, WsConnectionState, WsStream};
 use crate::base::ws_connection::{WsConnectionManager, MessageHandler};
@@ -27,6 +28,23 @@ const BYBIT_WS_PRIVATE: &str = "wss://stream.bybit.com/v5/private";
 const BYBIT_WS_TESTNET_PUBLIC: &str = "wss://stream-testnet.bybit.com/v5/public/spot";
 const BYBIT_WS_TESTNET_PRIVATE: &str = "wss://stream-testnet.bybit.com/v5/private";
 
+/// Bybit checksum format: first 25 bids and asks interleaved
+/// "bid1_price:bid1_amount:ask1_price:ask1_amount:..."
+fn bybit_checksum_format(lob: &LocalOrderBook) -> String {
+    let bids = lob.bids();
+    let asks = lob.asks();
+    let mut parts = Vec::new();
+    for i in 0..25 {
+        if let Some((p, a)) = bids.get(i) {
+            parts.push(format!("{}:{}", p, a));
+        }
+        if let Some((p, a)) = asks.get(i) {
+            parts.push(format!("{}:{}", p, a));
+        }
+    }
+    parts.join(":")
+}
+
 /// Bybit WebSocket client
 pub struct BybitWs {
     public_conn: Arc<WsConnectionManager>,
@@ -41,6 +59,8 @@ pub struct BybitWs {
     balance_sender: broadcast::Sender<Balances>,
     position_sender: broadcast::Sender<Vec<Position>>,
     my_trade_sender: broadcast::Sender<Trade>,
+
+    local_orderbooks: Arc<RwLock<HashMap<String, Arc<RwLock<LocalOrderBook>>>>>,
 
     config: WsConfig,
     sandbox: bool,
@@ -76,6 +96,7 @@ impl BybitWs {
             balance_sender: balance_tx,
             position_sender: position_tx,
             my_trade_sender: my_trade_tx,
+            local_orderbooks: Arc::new(RwLock::new(HashMap::new())),
             config,
             sandbox,
             api_key: None,
@@ -273,6 +294,7 @@ impl BybitWs {
         let ticker_senders = self.ticker_senders.clone();
         let orderbook_senders = self.orderbook_senders.clone();
         let trade_senders = self.trade_senders.clone();
+        let local_orderbooks = self.local_orderbooks.clone();
         let last_pong = self.public_conn.last_pong_handle();
 
         let handler: MessageHandler = Arc::new(move |text: String| {
@@ -301,14 +323,84 @@ impl BybitWs {
                     }
                 }
             } else if topic.starts_with("orderbook.") {
-                if let Some(data) = json.get("data") {
-                    let bybit_symbol = data.get("s").and_then(|v| v.as_str()).unwrap_or("");
-                    let symbol = parsers::symbol_from_bybit(bybit_symbol);
-                    if let Ok(ob) = parsers::parse_orderbook(data, &symbol) {
-                        let senders = orderbook_senders.blocking_read();
-                        if let Some(tx) = senders.get(&symbol) {
-                            let _ = tx.send(ob);
+                let ob_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("snapshot");
+                let data = match json.get("data") {
+                    Some(d) => d,
+                    None => return,
+                };
+
+                let bybit_symbol = data.get("s").and_then(|v| v.as_str()).unwrap_or("");
+                let symbol = parsers::symbol_from_bybit(bybit_symbol);
+
+                // Parse bids and asks from data
+                let bids_array = data.get("b").and_then(|v| v.as_array());
+                let asks_array = data.get("a").and_then(|v| v.as_array());
+
+                let bids: Vec<(Decimal, Decimal)> = bids_array
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| {
+                                let arr = item.as_array()?;
+                                let price = arr.first()?.as_str().and_then(|s| Decimal::from_str(s).ok())?;
+                                let amount = arr.get(1)?.as_str().and_then(|s| Decimal::from_str(s).ok())?;
+                                Some((price, amount))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let asks: Vec<(Decimal, Decimal)> = asks_array
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| {
+                                let arr = item.as_array()?;
+                                let price = arr.first()?.as_str().and_then(|s| Decimal::from_str(s).ok())?;
+                                let amount = arr.get(1)?.as_str().and_then(|s| Decimal::from_str(s).ok())?;
+                                Some((price, amount))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let nonce = data.get("u").and_then(|v| v.as_u64());
+                let timestamp = data
+                    .get("ts")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .or_else(|| data.get("ts").and_then(|v| v.as_i64()))
+                    .unwrap_or(0);
+
+                let lobs = local_orderbooks.blocking_read();
+                if let Some(lob) = lobs.get(&symbol) {
+                    let mut book = lob.blocking_write();
+                    match ob_type {
+                        "snapshot" => {
+                            book.reset(bids, asks, nonce, timestamp);
                         }
+                        "delta" => {
+                            book.update_bids(&bids);
+                            book.update_asks(&asks);
+                            if let Some(n) = nonce {
+                                book.set_nonce(n);
+                            }
+                            book.set_timestamp(timestamp);
+                        }
+                        _ => {}
+                    }
+
+                    // Validate checksum if present (Bybit sends `cs` field)
+                    if let Some(cs) = data.get("cs").and_then(|v| v.as_u64()) {
+                        let valid = book.validate_checksum(cs as u32, bybit_checksum_format);
+                        if !valid {
+                            // Log checksum mismatch but continue
+                            eprintln!("Bybit orderbook checksum mismatch for {}", symbol);
+                        }
+                    }
+
+                    let snapshot = book.to_orderbook(None);
+                    let senders = orderbook_senders.blocking_read();
+                    if let Some(tx) = senders.get(&symbol) {
+                        let _ = tx.send(snapshot);
                     }
                 }
             } else if topic.starts_with("publicTrade.") {
@@ -359,6 +451,15 @@ impl ExchangeWs for BybitWs {
         let topic = format!("orderbook.{}.{}", depth, bybit_sym);
         let sub_id = SubscriptionId(topic.clone());
         let sub_msg = Self::subscribe_msg(&[&topic]);
+
+        // Initialize local orderbook if not present
+        {
+            let mut lobs = self.local_orderbooks.write().await;
+            if !lobs.contains_key(symbol) {
+                let lob = LocalOrderBook::new(symbol.to_string());
+                lobs.insert(symbol.to_string(), Arc::new(RwLock::new(lob)));
+            }
+        }
 
         let rx = {
             let mut senders = self.orderbook_senders.write().await;
@@ -456,5 +557,24 @@ impl ExchangeWs for BybitWs {
             conn.close().await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    #[test]
+    fn test_bybit_checksum_format() {
+        let mut lob = LocalOrderBook::new("BTC/USDT".to_string());
+        lob.reset(
+            vec![(dec!(50000.5), dec!(1.5)), (dec!(49999), dec!(2.0))],
+            vec![(dec!(50001), dec!(0.8)), (dec!(50002.5), dec!(1.2))],
+            None,
+            0,
+        );
+        let result = bybit_checksum_format(&lob);
+        assert_eq!(result, "50000.5:1.5:50001:0.8:49999:2.0:50002.5:1.2");
     }
 }

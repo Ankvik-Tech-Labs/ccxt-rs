@@ -8,6 +8,7 @@
 //! Subscribe: `{"op":"subscribe","args":[{"channel":"tickers","instId":"BTC-USDT"}]}`
 
 use crate::base::errors::{CcxtError, Result};
+use crate::base::local_orderbook::LocalOrderBook;
 use crate::base::signer::{hmac_sha256_base64, timestamp_ms, timestamp_s, timestamp_to_iso8601};
 use crate::base::ws::{ExchangeWs, NowOrNever, SubscriptionId, WsConfig, WsConnectionState, WsStream};
 use crate::base::ws_connection::{WsConnectionManager, MessageHandler};
@@ -26,6 +27,40 @@ const OKX_WS_PRIVATE: &str = "wss://ws.okx.com:8443/ws/v5/private";
 const OKX_WS_PUBLIC_SANDBOX: &str = "wss://wspap.okx.com:8443/ws/v5/public?brokerId=9999";
 const OKX_WS_PRIVATE_SANDBOX: &str = "wss://wspap.okx.com:8443/ws/v5/private?brokerId=9999";
 
+/// Parse price levels from OKX orderbook JSON array
+fn parse_levels(value: Option<&serde_json::Value>) -> Vec<(Decimal, Decimal)> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let level = item.as_array()?;
+                    let price = level.first()?.as_str().and_then(|s| Decimal::from_str(s).ok())?;
+                    let amount = level.get(1)?.as_str().and_then(|s| Decimal::from_str(s).ok())?;
+                    Some((price, amount))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// OKX checksum format: interleave ask and bid levels (top 25)
+/// "bid1_price:bid1_amount:ask1_price:ask1_amount:..."
+fn okx_checksum_format(lob: &LocalOrderBook) -> String {
+    let bids = lob.bids();
+    let asks = lob.asks();
+    let mut parts = Vec::new();
+    for i in 0..25 {
+        if let Some((p, a)) = bids.get(i) {
+            parts.push(format!("{}:{}", p, a));
+        }
+        if let Some((p, a)) = asks.get(i) {
+            parts.push(format!("{}:{}", p, a));
+        }
+    }
+    parts.join(":")
+}
+
 /// OKX WebSocket client
 pub struct OkxWs {
     public_conn: Arc<WsConnectionManager>,
@@ -40,6 +75,8 @@ pub struct OkxWs {
     balance_sender: broadcast::Sender<Balances>,
     position_sender: broadcast::Sender<Vec<Position>>,
     my_trade_sender: broadcast::Sender<Trade>,
+
+    local_orderbooks: Arc<RwLock<HashMap<String, Arc<RwLock<LocalOrderBook>>>>>,
 
     config: WsConfig,
     sandbox: bool,
@@ -77,6 +114,7 @@ impl OkxWs {
             balance_sender: balance_tx,
             position_sender: position_tx,
             my_trade_sender: my_trade_tx,
+            local_orderbooks: Arc::new(RwLock::new(HashMap::new())),
             config,
             sandbox,
             api_key: None,
@@ -296,6 +334,7 @@ impl OkxWs {
         let ticker_senders = self.ticker_senders.clone();
         let orderbook_senders = self.orderbook_senders.clone();
         let trade_senders = self.trade_senders.clone();
+        let local_orderbooks = self.local_orderbooks.clone();
         let last_pong = self.public_conn.last_pong_handle();
 
         let handler: MessageHandler = Arc::new(move |text: String| {
@@ -342,11 +381,51 @@ impl OkxWs {
                     }
                 }
                 "books5" | "books" | "books50-l2-tbt" => {
-                    for item in data {
-                        if let Ok(ob) = parsers::parse_orderbook(item, &symbol) {
+                    // OKX sends snapshot vs update via "action" field
+                    let action = json.get("action").and_then(|v| v.as_str()).unwrap_or("snapshot");
+
+                    if let Some(item) = data.first() {
+                        let bids = parse_levels(item.get("bids"));
+                        let asks = parse_levels(item.get("asks"));
+                        let nonce = item.get("seqId").and_then(|v| v.as_u64());
+                        let timestamp = item.get("ts")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .unwrap_or_else(|| timestamp_ms());
+
+                        // Update local orderbook
+                        let lobs = local_orderbooks.blocking_read();
+                        if let Some(lob) = lobs.get(&symbol) {
+                            let mut book = lob.blocking_write();
+
+                            match action {
+                                "snapshot" => {
+                                    book.reset(bids, asks, nonce, timestamp);
+                                }
+                                "update" => {
+                                    book.update_bids(&bids);
+                                    book.update_asks(&asks);
+                                    if let Some(n) = nonce {
+                                        book.set_nonce(n);
+                                    }
+                                    book.set_timestamp(timestamp);
+                                }
+                                _ => {}
+                            }
+
+                            // Validate checksum if present
+                            if let Some(cs) = item.get("checksum").and_then(|v| v.as_i64()) {
+                                let valid = book.validate_checksum(cs as u32, okx_checksum_format);
+                                if !valid {
+                                    tracing::warn!("OKX orderbook checksum mismatch for {}", symbol);
+                                }
+                            }
+
+                            // Broadcast assembled orderbook
+                            let snapshot = book.to_orderbook(None);
                             let senders = orderbook_senders.blocking_read();
                             if let Some(tx) = senders.get(&symbol) {
-                                let _ = tx.send(ob);
+                                let _ = tx.send(snapshot);
                             }
                         }
                     }
@@ -396,6 +475,13 @@ impl ExchangeWs for OkxWs {
         let okx_id = Self::inst_id(symbol);
         let sub_id = SubscriptionId(format!("books5:{}", okx_id));
         let sub_msg = Self::subscribe_msg("books5", &okx_id);
+
+        // Initialize LocalOrderBook if not present
+        {
+            let mut lobs = self.local_orderbooks.write().await;
+            lobs.entry(symbol.to_string())
+                .or_insert_with(|| Arc::new(RwLock::new(LocalOrderBook::new(symbol.to_string()))));
+        }
 
         let rx = {
             let mut senders = self.orderbook_senders.write().await;
@@ -492,5 +578,24 @@ impl ExchangeWs for OkxWs {
             conn.close().await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    #[test]
+    fn test_okx_checksum_format() {
+        let mut lob = LocalOrderBook::new("BTC/USDT".to_string());
+        lob.reset(
+            vec![(dec!(50000), dec!(1.5)), (dec!(49999), dec!(2.0))],
+            vec![(dec!(50001), dec!(0.8)), (dec!(50002), dec!(1.2))],
+            None,
+            0,
+        );
+        let result = okx_checksum_format(&lob);
+        assert_eq!(result, "50000:1.5:50001:0.8:49999:2.0:50002:1.2");
     }
 }
