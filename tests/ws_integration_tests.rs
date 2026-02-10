@@ -72,6 +72,64 @@ mod binance_ws {
 
     #[tokio::test]
     #[ignore]
+    async fn ws_binance_orderbook_depth_sorted() {
+        let config = WsConfig::default();
+        let ws = BinanceWs::new(false, config);
+
+        let mut stream = ws.watch_order_book("BTC/USDT", Some(20)).await.unwrap();
+
+        let ob = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await
+            .expect("Timeout waiting for orderbook")
+            .expect("Stream ended unexpectedly");
+
+        assert_eq!(ob.symbol, "BTC/USDT");
+
+        // Verify bids sorted descending (highest first)
+        for window in ob.bids.windows(2) {
+            assert!(
+                window[0].0 >= window[1].0,
+                "Bids not sorted descending: {} < {}",
+                window[0].0,
+                window[1].0
+            );
+        }
+
+        // Verify asks sorted ascending (lowest first)
+        for window in ob.asks.windows(2) {
+            assert!(
+                window[0].0 <= window[1].0,
+                "Asks not sorted ascending: {} > {}",
+                window[0].0,
+                window[1].0
+            );
+        }
+
+        // Verify no zero amounts
+        for (price, amount) in &ob.bids {
+            assert!(*amount > rust_decimal::Decimal::ZERO, "Bid has zero amount at price {}", price);
+        }
+        for (price, amount) in &ob.asks {
+            assert!(*amount > rust_decimal::Decimal::ZERO, "Ask has zero amount at price {}", price);
+        }
+
+        // Verify spread is non-negative (if both sides present)
+        if !ob.bids.is_empty() && !ob.asks.is_empty() {
+            let best_bid = ob.bids[0].0;
+            let best_ask = ob.asks[0].0;
+            assert!(
+                best_ask >= best_bid,
+                "Negative spread: best_bid={} > best_ask={}",
+                best_bid,
+                best_ask
+            );
+        }
+
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
     async fn ws_binance_trade_stream() {
         let config = WsConfig::default();
         let ws = BinanceWs::new(false, config);
@@ -244,6 +302,64 @@ mod bybit_ws {
 
     #[tokio::test]
     #[ignore]
+    async fn ws_bybit_orderbook_depth_sorted() {
+        let config = WsConfig::default();
+        let ws = BybitWs::new(false, config);
+
+        let mut stream = ws.watch_order_book("BTC/USDT", Some(20)).await.unwrap();
+
+        let ob = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await
+            .expect("Timeout waiting for orderbook")
+            .expect("Stream ended unexpectedly");
+
+        assert_eq!(ob.symbol, "BTC/USDT");
+
+        // Verify bids sorted descending (highest first)
+        for window in ob.bids.windows(2) {
+            assert!(
+                window[0].0 >= window[1].0,
+                "Bids not sorted descending: {} < {}",
+                window[0].0,
+                window[1].0
+            );
+        }
+
+        // Verify asks sorted ascending (lowest first)
+        for window in ob.asks.windows(2) {
+            assert!(
+                window[0].0 <= window[1].0,
+                "Asks not sorted ascending: {} > {}",
+                window[0].0,
+                window[1].0
+            );
+        }
+
+        // Verify no zero amounts
+        for (price, amount) in &ob.bids {
+            assert!(*amount > rust_decimal::Decimal::ZERO, "Bid has zero amount at price {}", price);
+        }
+        for (price, amount) in &ob.asks {
+            assert!(*amount > rust_decimal::Decimal::ZERO, "Ask has zero amount at price {}", price);
+        }
+
+        // Verify spread is non-negative (if both sides present)
+        if !ob.bids.is_empty() && !ob.asks.is_empty() {
+            let best_bid = ob.bids[0].0;
+            let best_ask = ob.asks[0].0;
+            assert!(
+                best_ask >= best_bid,
+                "Negative spread: best_bid={} > best_ask={}",
+                best_bid,
+                best_ask
+            );
+        }
+
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
     async fn ws_bybit_trade_stream() {
         let config = WsConfig::default();
         let ws = BybitWs::new(false, config);
@@ -386,6 +502,64 @@ mod okx_ws {
             .expect("Stream ended unexpectedly");
 
         assert_eq!(ob.symbol, "BTC/USDT");
+
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_okx_orderbook_depth_sorted() {
+        let config = WsConfig::default();
+        let ws = OkxWs::new(false, config);
+
+        let mut stream = ws.watch_order_book("BTC/USDT:USDT", Some(20)).await.unwrap();
+
+        let ob = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await
+            .expect("Timeout waiting for orderbook")
+            .expect("Stream ended unexpectedly");
+
+        assert_eq!(ob.symbol, "BTC/USDT:USDT");
+
+        // Verify bids sorted descending (highest first)
+        for window in ob.bids.windows(2) {
+            assert!(
+                window[0].0 >= window[1].0,
+                "Bids not sorted descending: {} < {}",
+                window[0].0,
+                window[1].0
+            );
+        }
+
+        // Verify asks sorted ascending (lowest first)
+        for window in ob.asks.windows(2) {
+            assert!(
+                window[0].0 <= window[1].0,
+                "Asks not sorted ascending: {} > {}",
+                window[0].0,
+                window[1].0
+            );
+        }
+
+        // Verify no zero amounts
+        for (price, amount) in &ob.bids {
+            assert!(*amount > rust_decimal::Decimal::ZERO, "Bid has zero amount at price {}", price);
+        }
+        for (price, amount) in &ob.asks {
+            assert!(*amount > rust_decimal::Decimal::ZERO, "Ask has zero amount at price {}", price);
+        }
+
+        // Verify spread is non-negative (if both sides present)
+        if !ob.bids.is_empty() && !ob.asks.is_empty() {
+            let best_bid = ob.bids[0].0;
+            let best_ask = ob.asks[0].0;
+            assert!(
+                best_ask >= best_bid,
+                "Negative spread: best_bid={} > best_ask={}",
+                best_bid,
+                best_ask
+            );
+        }
 
         ws.close().await.unwrap();
     }
@@ -541,6 +715,67 @@ mod hyperliquid_ws {
             .expect("Stream ended unexpectedly");
 
         assert_eq!(ob.symbol, "BTC/USD:USDC");
+
+        ws.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ws_hyperliquid_orderbook_depth_sorted() {
+        let config = WsConfig::default();
+        let ws = HyperliquidWs::new(false, config);
+
+        let mut stream = ws
+            .watch_order_book("BTC/USD:USDC", Some(20))
+            .await
+            .unwrap();
+
+        let ob = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await
+            .expect("Timeout waiting for orderbook")
+            .expect("Stream ended unexpectedly");
+
+        assert_eq!(ob.symbol, "BTC/USD:USDC");
+
+        // Verify bids sorted descending (highest first)
+        for window in ob.bids.windows(2) {
+            assert!(
+                window[0].0 >= window[1].0,
+                "Bids not sorted descending: {} < {}",
+                window[0].0,
+                window[1].0
+            );
+        }
+
+        // Verify asks sorted ascending (lowest first)
+        for window in ob.asks.windows(2) {
+            assert!(
+                window[0].0 <= window[1].0,
+                "Asks not sorted ascending: {} > {}",
+                window[0].0,
+                window[1].0
+            );
+        }
+
+        // Verify no zero amounts
+        for (price, amount) in &ob.bids {
+            assert!(*amount > rust_decimal::Decimal::ZERO, "Bid has zero amount at price {}", price);
+        }
+        for (price, amount) in &ob.asks {
+            assert!(*amount > rust_decimal::Decimal::ZERO, "Ask has zero amount at price {}", price);
+        }
+
+        // Verify spread is non-negative (if both sides present)
+        if !ob.bids.is_empty() && !ob.asks.is_empty() {
+            let best_bid = ob.bids[0].0;
+            let best_ask = ob.asks[0].0;
+            assert!(
+                best_ask >= best_bid,
+                "Negative spread: best_bid={} > best_ask={}",
+                best_bid,
+                best_ask
+            );
+        }
 
         ws.close().await.unwrap();
     }
