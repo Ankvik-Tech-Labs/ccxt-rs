@@ -531,8 +531,10 @@ pub fn parse_order(json: &Value, symbol: &str) -> Result<Order> {
     let side = if side_str == "sell" { OrderSide::Sell } else { OrderSide::Buy };
 
     // Amounts
-    let sz = optional_decimal(json, "sz").unwrap_or(Decimal::ZERO);
-    let acc_fill_sz = optional_decimal(json, "accFillSz").unwrap_or(Decimal::ZERO);
+    let sz = optional_decimal(json, "sz")
+        .ok_or_else(|| CcxtError::ParseError("Missing field: sz in order".into()))?;
+    let acc_fill_sz = optional_decimal(json, "accFillSz")
+        .ok_or_else(|| CcxtError::ParseError("Missing field: accFillSz in order".into()))?;
     let avg_px = optional_decimal(json, "avgPx");
     let fill_px = optional_decimal(json, "fillPx");
 

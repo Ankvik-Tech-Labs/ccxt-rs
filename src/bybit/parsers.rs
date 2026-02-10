@@ -581,8 +581,10 @@ pub fn parse_order(json: &Value, symbol: &str) -> Result<Order> {
     let side = if side_str == "Sell" { OrderSide::Sell } else { OrderSide::Buy };
 
     // Amounts
-    let orig_qty = optional_decimal(json, "qty").unwrap_or(Decimal::ZERO);
-    let cum_exec_qty = optional_decimal(json, "cumExecQty").unwrap_or(Decimal::ZERO);
+    let orig_qty = optional_decimal(json, "qty")
+        .ok_or_else(|| CcxtError::ParseError("Missing field: qty in order".into()))?;
+    let cum_exec_qty = optional_decimal(json, "cumExecQty")
+        .ok_or_else(|| CcxtError::ParseError("Missing field: cumExecQty in order".into()))?;
     let cum_exec_value = optional_decimal(json, "cumExecValue");
     let cum_exec_fee = optional_decimal(json, "cumExecFee");
 

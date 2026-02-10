@@ -605,8 +605,10 @@ pub fn parse_order(json: &Value, symbol: &str, _is_futures: bool) -> Result<Orde
     let side = if side_str == "SELL" { OrderSide::Sell } else { OrderSide::Buy };
 
     // Amounts
-    let orig_qty = optional_decimal_flexible(json, "origQty").unwrap_or(Decimal::ZERO);
-    let executed_qty = optional_decimal_flexible(json, "executedQty").unwrap_or(Decimal::ZERO);
+    let orig_qty = optional_decimal_flexible(json, "origQty")
+        .ok_or_else(|| CcxtError::ParseError("Missing field: origQty in order".into()))?;
+    let executed_qty = optional_decimal_flexible(json, "executedQty")
+        .ok_or_else(|| CcxtError::ParseError("Missing field: executedQty in order".into()))?;
     let cumulative_quote = optional_decimal_flexible(json, "cummulativeQuoteQty")
         .or_else(|| optional_decimal_flexible(json, "cumQuote"));
 
@@ -823,11 +825,15 @@ pub fn parse_my_trade(json: &Value, symbol: &str) -> Result<Trade> {
         .unwrap_or(false);
     let taker_or_maker = if is_maker { "maker" } else { "taker" };
 
-    let price = optional_decimal_flexible(json, "price").unwrap_or(Decimal::ZERO);
-    let qty = optional_decimal_flexible(json, "qty").unwrap_or(Decimal::ZERO);
-    let quote_qty = optional_decimal_flexible(json, "quoteQty").unwrap_or(price * qty);
+    let price = optional_decimal_flexible(json, "price")
+        .ok_or_else(|| CcxtError::ParseError("Missing field: price in my_trade".into()))?;
+    let qty = optional_decimal_flexible(json, "qty")
+        .ok_or_else(|| CcxtError::ParseError("Missing field: qty in my_trade".into()))?;
+    let quote_qty = optional_decimal_flexible(json, "quoteQty")
+        .unwrap_or_else(|| price * qty);
 
-    let commission = optional_decimal_flexible(json, "commission").unwrap_or(Decimal::ZERO);
+    let commission = optional_decimal_flexible(json, "commission")
+        .ok_or_else(|| CcxtError::ParseError("Missing field: commission in my_trade".into()))?;
     let commission_asset = json.get("commissionAsset")
         .and_then(|v| v.as_str())
         .unwrap_or("")
@@ -871,7 +877,8 @@ pub fn parse_position(json: &Value) -> Result<Position> {
 
     let symbol = symbol_from_binance_futures(binance_symbol);
 
-    let position_amt = optional_decimal_flexible(json, "positionAmt").unwrap_or(Decimal::ZERO);
+    let position_amt = optional_decimal_flexible(json, "positionAmt")
+        .ok_or_else(|| CcxtError::ParseError("Missing field: positionAmt in position".into()))?;
 
     let side = if position_amt > Decimal::ZERO {
         PositionSide::Long
@@ -943,10 +950,10 @@ pub fn parse_position(json: &Value) -> Result<Position> {
 pub fn parse_funding_rate(json: &Value, symbol: &str) -> Result<FundingRate> {
     let timestamp = json.get("time")
         .and_then(|v| v.as_i64())
-        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+        .ok_or_else(|| CcxtError::ParseError("Missing field: time in funding rate".into()))?;
 
     let funding_rate = optional_decimal_flexible(json, "lastFundingRate")
-        .unwrap_or(Decimal::ZERO);
+        .ok_or_else(|| CcxtError::ParseError("Missing field: lastFundingRate in funding rate".into()))?;
 
     let next_funding_time = json.get("nextFundingTime").and_then(|v| v.as_i64());
 
@@ -1049,15 +1056,21 @@ pub fn parse_currency(json: &Value) -> Result<Currency> {
 pub fn parse_deposit(json: &Value) -> Result<Deposit> {
     let id = json.get("id")
         .and_then(|v| v.as_str().map(|s| s.to_string()).or_else(|| v.as_i64().map(|i| i.to_string())))
-        .unwrap_or_default();
+        .ok_or_else(|| CcxtError::ParseError("Missing field: id in deposit".into()))?;
 
     let txid = json.get("txId").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let timestamp = json.get("insertTime").and_then(|v| v.as_i64()).unwrap_or(0);
+    let timestamp = json.get("insertTime").and_then(|v| v.as_i64())
+        .ok_or_else(|| CcxtError::ParseError("Missing field: insertTime in deposit".into()))?;
     let network = json.get("network").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let address = json.get("address").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let address = json.get("address").and_then(|v| v.as_str())
+        .ok_or_else(|| CcxtError::ParseError("Missing field: address in deposit".into()))?
+        .to_string();
     let tag = json.get("addressTag").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
-    let amount = optional_decimal_flexible(json, "amount").unwrap_or(Decimal::ZERO);
-    let coin = json.get("coin").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let amount = optional_decimal_flexible(json, "amount")
+        .ok_or_else(|| CcxtError::ParseError("Missing field: amount in deposit".into()))?;
+    let coin = json.get("coin").and_then(|v| v.as_str())
+        .ok_or_else(|| CcxtError::ParseError("Missing field: coin in deposit".into()))?
+        .to_string();
 
     // Status: 0=pending, 1=ok, 6=credited
     let status_code = json.get("status").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -1089,19 +1102,27 @@ pub fn parse_deposit(json: &Value) -> Result<Deposit> {
 pub fn parse_withdrawal(json: &Value) -> Result<Withdrawal> {
     let id = json.get("id")
         .and_then(|v| v.as_str().map(|s| s.to_string()).or_else(|| v.as_i64().map(|i| i.to_string())))
-        .unwrap_or_default();
+        .ok_or_else(|| CcxtError::ParseError("Missing field: id in withdrawal".into()))?;
 
     let txid = json.get("txId").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
     let timestamp = json.get("applyTime")
         .and_then(|v| v.as_str())
-        .and_then(|s| chrono::DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok())
-        .map(|dt| dt.timestamp_millis())
-        .unwrap_or(0);
+        .ok_or_else(|| CcxtError::ParseError("Missing field: applyTime in withdrawal".into()))
+        .and_then(|s| {
+            chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                .map(|ndt| ndt.and_utc().timestamp_millis())
+                .map_err(|_| CcxtError::ParseError(format!("Invalid applyTime format: {}", s)))
+        })?;
     let network = json.get("network").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let address = json.get("address").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let address = json.get("address").and_then(|v| v.as_str())
+        .ok_or_else(|| CcxtError::ParseError("Missing field: address in withdrawal".into()))?
+        .to_string();
     let tag = json.get("addressTag").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
-    let amount = optional_decimal_flexible(json, "amount").unwrap_or(Decimal::ZERO);
-    let coin = json.get("coin").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let amount = optional_decimal_flexible(json, "amount")
+        .ok_or_else(|| CcxtError::ParseError("Missing field: amount in withdrawal".into()))?;
+    let coin = json.get("coin").and_then(|v| v.as_str())
+        .ok_or_else(|| CcxtError::ParseError("Missing field: coin in withdrawal".into()))?
+        .to_string();
 
     // Status: 0=email sent, 1=cancelled, 2=awaiting, 3=rejected, 4=processing, 5=failure, 6=completed
     let status_code = json.get("status").and_then(|v| v.as_i64()).unwrap_or(0);
