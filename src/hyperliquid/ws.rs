@@ -7,6 +7,7 @@
 //! Private: `{"method":"subscribe","subscription":{"type":"userEvents","user":"0x..."}}`
 
 use crate::base::errors::{CcxtError, Result};
+use crate::base::local_orderbook::LocalOrderBook;
 use crate::base::ws::{ExchangeWs, NowOrNever, SubscriptionId, WsConfig, WsConnectionState, WsStream};
 use crate::base::ws_connection::{WsConnectionManager, MessageHandler};
 use crate::hyperliquid::parsers;
@@ -34,6 +35,8 @@ pub struct HyperliquidWs {
     position_sender: broadcast::Sender<Vec<Position>>,
     my_trade_sender: broadcast::Sender<Trade>,
 
+    local_orderbooks: Arc<RwLock<HashMap<String, Arc<RwLock<LocalOrderBook>>>>>,
+
     config: WsConfig,
     #[allow(dead_code)]
     sandbox: bool,
@@ -60,6 +63,7 @@ impl HyperliquidWs {
             balance_sender: balance_tx,
             position_sender: position_tx,
             my_trade_sender: my_trade_tx,
+            local_orderbooks: Arc::new(RwLock::new(HashMap::new())),
             config,
             sandbox,
             user_address: None,
@@ -99,6 +103,7 @@ impl HyperliquidWs {
         let order_sender = self.order_sender.clone();
         let my_trade_sender = self.my_trade_sender.clone();
         let position_sender = self.position_sender.clone();
+        let local_orderbooks = self.local_orderbooks.clone();
 
         let handler: MessageHandler = Arc::new(move |text: String| {
             let json: serde_json::Value = match serde_json::from_str(&text) {
@@ -160,6 +165,13 @@ impl HyperliquidWs {
                         // Deserialize into HlL2Book for the parser
                         if let Ok(book) = serde_json::from_value::<HlL2Book>(data.clone()) {
                             if let Ok(ob) = parsers::parse_order_book(&book, &symbol) {
+                                // Update local orderbook (Hyperliquid always sends full snapshots)
+                                let lobs = local_orderbooks.blocking_read();
+                                if let Some(lob) = lobs.get(&symbol) {
+                                    let mut local = lob.blocking_write();
+                                    local.reset(ob.bids.clone(), ob.asks.clone(), ob.nonce, ob.timestamp);
+                                }
+
                                 let senders = orderbook_senders.blocking_read();
                                 if let Some(tx) = senders.get(&symbol) {
                                     let _ = tx.send(ob);
@@ -383,6 +395,13 @@ impl ExchangeWs for HyperliquidWs {
         let sub_id = SubscriptionId(format!("l2Book:{}", coin));
         let sub = serde_json::json!({ "type": "l2Book", "coin": coin });
         let sub_msg = Self::subscribe_msg(&sub);
+
+        // Initialize LocalOrderBook if not present
+        {
+            let mut lobs = self.local_orderbooks.write().await;
+            lobs.entry(symbol.to_string())
+                .or_insert_with(|| Arc::new(RwLock::new(LocalOrderBook::new(symbol.to_string()))));
+        }
 
         let rx = {
             let mut senders = self.orderbook_senders.write().await;
