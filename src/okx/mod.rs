@@ -30,6 +30,7 @@ use crate::base::{
     errors::{CcxtError, Result},
     exchange::{Exchange, ExchangeFeatures, ExchangeType, Params},
     http_client::HttpClient,
+    market_cache::MarketCache,
     signer::{hmac_sha256_base64, iso8601_now, timestamp_ms, timestamp_to_iso8601},
 };
 use crate::types::*;
@@ -61,8 +62,8 @@ pub struct Okx {
     /// Sandbox/demo mode
     sandbox: bool,
 
-    /// Cached markets
-    markets: Arc<tokio::sync::RwLock<Option<Vec<Market>>>>,
+    /// Market cache with TTL
+    market_cache: Arc<tokio::sync::RwLock<MarketCache>>,
 
     /// Exchange features
     features: ExchangeFeatures,
@@ -76,6 +77,7 @@ pub struct OkxBuilder {
     use_aws: bool,
     sandbox: bool,
     timeout: Duration,
+    market_cache_ttl: Duration,
 }
 
 impl OkxBuilder {
@@ -88,6 +90,7 @@ impl OkxBuilder {
             use_aws: false,
             sandbox: false,
             timeout: Duration::from_secs(30),
+            market_cache_ttl: Duration::from_secs(3600), // Default: 1 hour
         }
     }
 
@@ -127,6 +130,14 @@ impl OkxBuilder {
         self
     }
 
+    /// Set market cache TTL (default: 1 hour)
+    ///
+    /// Use `Duration::ZERO` to disable caching.
+    pub fn market_cache_ttl(mut self, ttl: Duration) -> Self {
+        self.market_cache_ttl = ttl;
+        self
+    }
+
     /// Build the OKX client
     pub fn build(self) -> Result<Okx> {
         let base_url = if self.use_aws {
@@ -142,7 +153,7 @@ impl OkxBuilder {
             client: HttpClient::new(None, self.timeout)?,
             base_url,
             sandbox: self.sandbox,
-            markets: Arc::new(tokio::sync::RwLock::new(None)),
+            market_cache: Arc::new(tokio::sync::RwLock::new(MarketCache::new(self.market_cache_ttl))),
             features: ExchangeFeatures {
                 fetch_ticker: true,
                 fetch_tickers: true,
@@ -504,24 +515,18 @@ impl Exchange for Okx {
     // ========================================================================
 
     async fn load_markets(&self) -> Result<Vec<Market>> {
-        {
-            let markets_guard = self.markets.read().await;
-            if let Some(markets) = markets_guard.as_ref() {
-                return Ok(markets.clone());
-            }
-        }
-
-        let markets = self.fetch_markets().await?;
-
-        {
-            let mut markets_guard = self.markets.write().await;
-            *markets_guard = Some(markets.clone());
-        }
-
-        Ok(markets)
+        self.fetch_markets().await
     }
 
     async fn fetch_markets(&self) -> Result<Vec<Market>> {
+        // Check cache first
+        {
+            let cache = self.market_cache.read().await;
+            if let Some(markets) = cache.get("okx") {
+                return Ok(markets);
+            }
+        }
+
         // Fetch spot markets
         let mut spot_params = HashMap::new();
         spot_params.insert("instType".to_string(), "SPOT".to_string());
@@ -566,6 +571,12 @@ impl Exchange for Okx {
             Err(e) => {
                 tracing::debug!("Failed to fetch swap markets: {}", e);
             }
+        }
+
+        // Cache the result
+        {
+            let mut cache = self.market_cache.write().await;
+            cache.insert("okx".to_string(), markets.clone());
         }
 
         Ok(markets)

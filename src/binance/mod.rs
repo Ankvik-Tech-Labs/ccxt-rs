@@ -33,6 +33,7 @@ use crate::base::{
     errors::{CcxtError, Result},
     exchange::{Exchange, ExchangeFeatures, ExchangeType, Params},
     http_client::HttpClient,
+    market_cache::MarketCache,
     rate_limiter::RateLimiter,
     signer::{hmac_sha256, timestamp_ms, timestamp_to_iso8601},
 };
@@ -62,8 +63,8 @@ pub struct Binance {
     /// Futures API base URL
     fapi_url: String,
 
-    /// Cached markets
-    markets: Arc<tokio::sync::RwLock<Option<Vec<Market>>>>,
+    /// Market cache with TTL
+    market_cache: Arc<tokio::sync::RwLock<MarketCache>>,
 
     /// Exchange features
     features: ExchangeFeatures,
@@ -76,6 +77,7 @@ pub struct BinanceBuilder {
     sandbox: bool,
     rate_limit: bool,
     timeout: Duration,
+    market_cache_ttl: Duration,
 }
 
 impl BinanceBuilder {
@@ -87,6 +89,7 @@ impl BinanceBuilder {
             sandbox: false,
             rate_limit: true,
             timeout: Duration::from_secs(30),
+            market_cache_ttl: Duration::from_secs(3600), // Default: 1 hour
         }
     }
 
@@ -120,6 +123,14 @@ impl BinanceBuilder {
         self
     }
 
+    /// Set market cache TTL (default: 1 hour)
+    ///
+    /// Use `Duration::ZERO` to disable caching.
+    pub fn market_cache_ttl(mut self, ttl: Duration) -> Self {
+        self.market_cache_ttl = ttl;
+        self
+    }
+
     /// Build the Binance client
     pub fn build(self) -> Result<Binance> {
         let base_url = if self.sandbox {
@@ -149,7 +160,7 @@ impl BinanceBuilder {
             http_client,
             base_url,
             fapi_url,
-            markets: Arc::new(tokio::sync::RwLock::new(None)),
+            market_cache: Arc::new(tokio::sync::RwLock::new(MarketCache::new(self.market_cache_ttl))),
             features: ExchangeFeatures {
                 fetch_ticker: true,
                 fetch_tickers: true,
@@ -518,27 +529,18 @@ impl Exchange for Binance {
     // ========================================================================
 
     async fn load_markets(&self) -> Result<Vec<Market>> {
-        // Check cache first
-        {
-            let markets_guard = self.markets.read().await;
-            if let Some(markets) = markets_guard.as_ref() {
-                return Ok(markets.clone());
-            }
-        }
-
-        // Fetch from API
-        let markets = self.fetch_markets().await?;
-
-        // Cache
-        {
-            let mut markets_guard = self.markets.write().await;
-            *markets_guard = Some(markets.clone());
-        }
-
-        Ok(markets)
+        self.fetch_markets().await
     }
 
     async fn fetch_markets(&self) -> Result<Vec<Market>> {
+        // Check cache first
+        {
+            let cache = self.market_cache.read().await;
+            if let Some(markets) = cache.get("binance") {
+                return Ok(markets);
+            }
+        }
+
         // Fetch spot markets
         let json = self.public_get("/api/v3/exchangeInfo", None).await?;
 
@@ -576,6 +578,12 @@ impl Exchange for Binance {
             Err(e) => {
                 tracing::debug!("Failed to fetch futures markets: {}", e);
             }
+        }
+
+        // Cache the result
+        {
+            let mut cache = self.market_cache.write().await;
+            cache.insert("binance".to_string(), markets.clone());
         }
 
         Ok(markets)

@@ -10,6 +10,7 @@ use crate::base::{
     errors::{CcxtError, Result},
     exchange::{Exchange, ExchangeFeatures, ExchangeType, Params},
     http_client::HttpClient,
+    market_cache::MarketCache,
     signer::{hmac_sha256, timestamp_ms, timestamp_to_iso8601},
 };
 use crate::types::*;
@@ -18,6 +19,7 @@ use rust_decimal::Decimal;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Bybit exchange API endpoints
@@ -42,8 +44,8 @@ pub struct Bybit {
     /// Recv window for private requests
     recv_window: String,
 
-    /// Cached markets
-    markets: std::sync::RwLock<Option<Vec<Market>>>,
+    /// Market cache with TTL
+    market_cache: Arc<tokio::sync::RwLock<MarketCache>>,
 
     /// Exchange features
     features: ExchangeFeatures,
@@ -248,12 +250,24 @@ impl Bybit {
 }
 
 /// Builder for Bybit exchange
-#[derive(Default)]
 pub struct BybitBuilder {
     api_key: Option<String>,
     secret: Option<String>,
     sandbox: bool,
     recv_window: Option<String>,
+    market_cache_ttl: Duration,
+}
+
+impl Default for BybitBuilder {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            secret: None,
+            sandbox: false,
+            recv_window: None,
+            market_cache_ttl: Duration::from_secs(3600), // Default: 1 hour
+        }
+    }
 }
 
 impl BybitBuilder {
@@ -281,6 +295,14 @@ impl BybitBuilder {
         self
     }
 
+    /// Set market cache TTL (default: 1 hour)
+    ///
+    /// Use `Duration::ZERO` to disable caching.
+    pub fn market_cache_ttl(mut self, ttl: Duration) -> Self {
+        self.market_cache_ttl = ttl;
+        self
+    }
+
     /// Build the Bybit client
     pub fn build(self) -> Result<Bybit> {
         let base_url = if self.sandbox {
@@ -295,7 +317,7 @@ impl BybitBuilder {
             client: HttpClient::new(None, Duration::from_secs(30))?,
             base_url,
             recv_window: self.recv_window.unwrap_or_else(|| DEFAULT_RECV_WINDOW.to_string()),
-            markets: std::sync::RwLock::new(None),
+            market_cache: Arc::new(tokio::sync::RwLock::new(MarketCache::new(self.market_cache_ttl))),
             features: ExchangeFeatures {
                 // Market Data
                 fetch_ticker: true,
@@ -383,24 +405,18 @@ impl Exchange for Bybit {
     // ========================================================================
 
     async fn load_markets(&self) -> Result<Vec<Market>> {
-        {
-            let markets = self.markets.read().unwrap();
-            if let Some(ref cached) = *markets {
-                return Ok(cached.clone());
-            }
-        }
-
-        let markets = self.fetch_markets().await?;
-
-        {
-            let mut cache = self.markets.write().unwrap();
-            *cache = Some(markets.clone());
-        }
-
-        Ok(markets)
+        self.fetch_markets().await
     }
 
     async fn fetch_markets(&self) -> Result<Vec<Market>> {
+        // Check cache first
+        {
+            let cache = self.market_cache.read().await;
+            if let Some(markets) = cache.get("bybit") {
+                return Ok(markets);
+            }
+        }
+
         // Fetch spot markets
         let mut spot_params = HashMap::new();
         spot_params.insert("category".to_string(), "spot".to_string());
@@ -441,6 +457,12 @@ impl Exchange for Bybit {
             Err(e) => {
                 tracing::debug!("Failed to fetch linear markets: {}", e);
             }
+        }
+
+        // Cache the result
+        {
+            let mut cache = self.market_cache.write().await;
+            cache.insert("bybit".to_string(), markets.clone());
         }
 
         Ok(markets)

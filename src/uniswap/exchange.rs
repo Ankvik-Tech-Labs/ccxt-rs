@@ -80,6 +80,7 @@
 use crate::base::{
     errors::{CcxtError, Result},
     exchange::{Exchange, ExchangeFeatures, ExchangeType},
+    market_cache::MarketCache,
 };
 use crate::dex::{EvmProvider, SubgraphClient};
 use crate::types::*;
@@ -97,7 +98,7 @@ use tokio::sync::RwLock;
 pub struct UniswapV3 {
     chain_config: &'static ChainConfig,
     pool_manager: PoolManager,
-    markets: Arc<RwLock<Option<Vec<Market>>>>,
+    market_cache: Arc<RwLock<MarketCache>>,
     features: ExchangeFeatures,
 }
 
@@ -127,6 +128,7 @@ pub struct UniswapV3Builder {
     rpc_url: Option<String>,
     rate_limit: bool,
     timeout: Duration,
+    market_cache_ttl: Duration,
 }
 
 impl UniswapV3Builder {
@@ -140,6 +142,7 @@ impl UniswapV3Builder {
             rpc_url: None,
             rate_limit: true,
             timeout: Duration::from_secs(30),
+            market_cache_ttl: Duration::from_secs(3600), // Default: 1 hour
         }
     }
 
@@ -182,6 +185,14 @@ impl UniswapV3Builder {
     /// Set request timeout (default: 30s)
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Set market cache TTL (default: 1 hour)
+    ///
+    /// Use `Duration::ZERO` to disable caching.
+    pub fn market_cache_ttl(mut self, ttl: Duration) -> Self {
+        self.market_cache_ttl = ttl;
         self
     }
 
@@ -239,7 +250,7 @@ impl UniswapV3Builder {
         Ok(UniswapV3 {
             chain_config,
             pool_manager,
-            markets: Arc::new(RwLock::new(None)),
+            market_cache: Arc::new(RwLock::new(MarketCache::new(self.market_cache_ttl))),
             features,
         })
     }
@@ -270,12 +281,18 @@ impl Exchange for UniswapV3 {
     }
 
     async fn load_markets(&self) -> Result<Vec<Market>> {
-        let markets = self.fetch_markets().await?;
-        *self.markets.write().await = Some(markets.clone());
-        Ok(markets)
+        self.fetch_markets().await
     }
 
     async fn fetch_markets(&self) -> Result<Vec<Market>> {
+        // Check cache first
+        {
+            let cache = self.market_cache.read().await;
+            if let Some(markets) = cache.get("uniswap") {
+                return Ok(markets);
+            }
+        }
+
         // Discover pools with TVL > $10k
         let pools = self.pool_manager.discover_pools(10000.0).await?;
 
@@ -309,6 +326,12 @@ impl Exchange for UniswapV3 {
                 Ok(market) => markets.push(market),
                 Err(_) => continue,
             }
+        }
+
+        // Cache the result
+        {
+            let mut cache = self.market_cache.write().await;
+            cache.insert("uniswap".to_string(), markets.clone());
         }
 
         Ok(markets)

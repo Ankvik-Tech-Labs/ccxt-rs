@@ -23,6 +23,7 @@
 
 use crate::base::errors::{CcxtError, Result};
 use crate::base::exchange::{Exchange, ExchangeFeatures, ExchangeType, Params};
+use crate::base::market_cache::MarketCache;
 use crate::base::rate_limiter::RateLimiter;
 use crate::base::signer::timestamp_ms;
 use crate::hyperliquid::client::HyperliquidClient;
@@ -46,6 +47,7 @@ pub struct HyperliquidBuilder {
     rate_limit: bool,
     timeout: Duration,
     vault_address: Option<String>,
+    market_cache_ttl: Duration,
 }
 
 impl HyperliquidBuilder {
@@ -56,6 +58,7 @@ impl HyperliquidBuilder {
             rate_limit: true,
             timeout: Duration::from_secs(30),
             vault_address: None,
+            market_cache_ttl: Duration::from_secs(3600), // Default: 1 hour
         }
     }
 
@@ -89,6 +92,14 @@ impl HyperliquidBuilder {
         self
     }
 
+    /// Set market cache TTL (default: 1 hour)
+    ///
+    /// Use `Duration::ZERO` to disable caching.
+    pub fn market_cache_ttl(mut self, ttl: Duration) -> Self {
+        self.market_cache_ttl = ttl;
+        self
+    }
+
     /// Build the Hyperliquid exchange client.
     pub fn build(self) -> Result<Hyperliquid> {
         let base_url = if self.sandbox {
@@ -116,7 +127,7 @@ impl HyperliquidBuilder {
             client,
             signer,
             vault_address: self.vault_address,
-            markets: Arc::new(RwLock::new(None)),
+            market_cache: Arc::new(RwLock::new(MarketCache::new(self.market_cache_ttl))),
             asset_index: Arc::new(RwLock::new(HashMap::new())),
             asset_names: Arc::new(RwLock::new(HashMap::new())),
             meta: Arc::new(RwLock::new(None)),
@@ -172,7 +183,7 @@ pub struct Hyperliquid {
     client: HyperliquidClient,
     signer: Option<HyperliquidSigner>,
     vault_address: Option<String>,
-    markets: Arc<RwLock<Option<Vec<Market>>>>,
+    market_cache: Arc<RwLock<MarketCache>>,
     asset_index: Arc<RwLock<HashMap<String, u32>>>,
     asset_names: Arc<RwLock<HashMap<u32, String>>>,
     meta: Arc<RwLock<Option<HlMeta>>>,
@@ -319,24 +330,18 @@ impl Exchange for Hyperliquid {
     }
 
     async fn load_markets(&self) -> Result<Vec<Market>> {
-        {
-            let guard = self.markets.read().await;
-            if let Some(markets) = guard.as_ref() {
-                return Ok(markets.clone());
-            }
-        }
-
-        let markets = self.fetch_markets().await?;
-
-        {
-            let mut guard = self.markets.write().await;
-            *guard = Some(markets.clone());
-        }
-
-        Ok(markets)
+        self.fetch_markets().await
     }
 
     async fn fetch_markets(&self) -> Result<Vec<Market>> {
+        // Check cache first
+        {
+            let cache = self.market_cache.read().await;
+            if let Some(markets) = cache.get("hyperliquid") {
+                return Ok(markets);
+            }
+        }
+
         let json = self.client.info_request("metaAndAssetCtxs", None).await?;
 
         let arr = json
@@ -368,6 +373,12 @@ impl Exchange for Hyperliquid {
         {
             let mut meta_guard = self.meta.write().await;
             *meta_guard = Some(meta);
+        }
+
+        // Cache the result
+        {
+            let mut cache = self.market_cache.write().await;
+            cache.insert("hyperliquid".to_string(), markets.clone());
         }
 
         Ok(markets)
