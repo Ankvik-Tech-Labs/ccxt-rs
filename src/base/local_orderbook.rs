@@ -235,6 +235,23 @@ impl LocalOrderBook {
             _ => None,
         }
     }
+
+    /// Validate the orderbook state against a checksum.
+    ///
+    /// The `format_fn` is exchange-specific: it receives `&self` and must
+    /// return the string that should be CRC32-hashed and compared against
+    /// `expected_checksum`.
+    ///
+    /// Returns `true` if the checksum matches.
+    pub fn validate_checksum(
+        &self,
+        expected_checksum: u32,
+        format_fn: impl Fn(&Self) -> String,
+    ) -> bool {
+        let data = format_fn(self);
+        let computed = crc32fast::hash(data.as_bytes());
+        computed == expected_checksum
+    }
 }
 
 #[cfg(test)]
@@ -401,5 +418,57 @@ mod tests {
         assert!(ob.best_ask().is_none());
         assert!(ob.spread().is_none());
         assert!(ob.mid_price().is_none());
+    }
+
+    #[test]
+    fn test_checksum_callback() {
+        let mut ob = LocalOrderBook::new("BTC/USDT".to_string());
+        ob.reset(
+            vec![(Decimal::new(50000, 0), Decimal::new(1, 0))],
+            vec![(Decimal::new(50100, 0), Decimal::new(2, 0))],
+            None,
+            0,
+        );
+
+        // Simple format function for testing
+        let format_fn = |ob: &LocalOrderBook| {
+            let mut data = String::new();
+            for (price, qty) in ob.bids() {
+                data.push_str(&format!("{}:{}", price, qty));
+            }
+            for (price, qty) in ob.asks() {
+                data.push_str(&format!("{}:{}", price, qty));
+            }
+            data
+        };
+
+        let data = format_fn(&ob);
+        let expected = crc32fast::hash(data.as_bytes());
+        assert!(ob.validate_checksum(expected, format_fn));
+    }
+
+    #[test]
+    fn test_checksum_mismatch() {
+        let mut ob = LocalOrderBook::new("BTC/USDT".to_string());
+        ob.reset(
+            vec![(Decimal::new(50000, 0), Decimal::new(1, 0))],
+            vec![(Decimal::new(50100, 0), Decimal::new(2, 0))],
+            None,
+            0,
+        );
+
+        let format_fn = |ob: &LocalOrderBook| {
+            let mut data = String::new();
+            for (price, qty) in ob.bids() {
+                data.push_str(&format!("{}:{}", price, qty));
+            }
+            for (price, qty) in ob.asks() {
+                data.push_str(&format!("{}:{}", price, qty));
+            }
+            data
+        };
+
+        // Use a wrong checksum
+        assert!(!ob.validate_checksum(12345, format_fn));
     }
 }
