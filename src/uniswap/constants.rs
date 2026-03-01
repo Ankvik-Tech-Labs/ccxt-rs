@@ -15,9 +15,11 @@ pub struct ChainConfig {
     // Uniswap V3 addresses
     /// V3 Factory contract address
     pub v3_factory: &'static str,
-    /// V3 Router contract address
+    /// V3 Router contract address (SwapRouter v1)
     pub v3_router: &'static str,
-    /// V3 Quoter contract address
+    /// V3 SwapRouter02 contract address (universal router, preferred for swaps)
+    pub v3_swap_router02: &'static str,
+    /// V3 QuoterV2 contract address
     pub v3_quoter: &'static str,
     /// V3 NFT Position Manager contract address
     pub v3_nft_position_manager: &'static str,
@@ -44,6 +46,7 @@ pub const ETHEREUM: ChainConfig = ChainConfig {
     // V3 addresses (from Uniswap deployment)
     v3_factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
     v3_router: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    v3_swap_router02: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
     v3_quoter: "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6",
     v3_nft_position_manager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
 
@@ -66,6 +69,7 @@ pub const POLYGON: ChainConfig = ChainConfig {
     // V3 addresses
     v3_factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
     v3_router: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    v3_swap_router02: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
     v3_quoter: "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6",
     v3_nft_position_manager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
 
@@ -87,6 +91,7 @@ pub const ARBITRUM: ChainConfig = ChainConfig {
     // V3 addresses
     v3_factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
     v3_router: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    v3_swap_router02: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
     v3_quoter: "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6",
     v3_nft_position_manager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
 
@@ -108,6 +113,7 @@ pub const OPTIMISM: ChainConfig = ChainConfig {
     // V3 addresses
     v3_factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
     v3_router: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    v3_swap_router02: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
     v3_quoter: "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6",
     v3_nft_position_manager: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
 
@@ -129,6 +135,7 @@ pub const BASE: ChainConfig = ChainConfig {
     // V3 addresses
     v3_factory: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
     v3_router: "0x2626664c2603336E57B271c5C0b26F421741e481",
+    v3_swap_router02: "0x2626664c2603336E57B271c5C0b26F421741e481",
     v3_quoter: "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
     v3_nft_position_manager: "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1",
 

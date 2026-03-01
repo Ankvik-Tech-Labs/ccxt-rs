@@ -6,6 +6,7 @@
 pub mod constants;
 pub mod parsers;
 pub mod pools;
+pub mod swap;
 mod exchange;
 
 pub use exchange::{UniswapV3, UniswapV3Builder};

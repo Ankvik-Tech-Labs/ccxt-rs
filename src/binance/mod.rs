@@ -504,6 +504,84 @@ impl Binance {
             _ => CcxtError::BadRequest(format!("Binance error {}: {}", code, msg)),
         }
     }
+
+    /// Fetch OHLCV candles for a date range, automatically paginating through results.
+    ///
+    /// Requests 1000 candles per page (Binance maximum), sleeping 50 ms between pages
+    /// to respect rate limits. Stops when the last candle timestamp reaches or exceeds
+    /// `until`, or when a page returns fewer than 1000 candles (end of data).
+    ///
+    /// # Arguments
+    /// * `symbol` — Unified symbol, e.g. `"BTC/USDT"` or `"BTC/USDT:USDT"`
+    /// * `timeframe` — Candle timeframe
+    /// * `since` — Start time in milliseconds (inclusive)
+    /// * `until` — End time in milliseconds (exclusive)
+    pub async fn fetch_ohlcv_range(
+        &self,
+        symbol: &str,
+        timeframe: Timeframe,
+        since: i64,
+        until: i64,
+    ) -> Result<Vec<OHLCV>> {
+        let binance_symbol = parsers::symbol_to_binance(symbol);
+        let interval = parsers::timeframe_to_binance(timeframe);
+        let page_size = 1000u32;
+        let mut all_candles: Vec<OHLCV> = Vec::new();
+        let mut start_time = since;
+
+        loop {
+            let mut params = HashMap::new();
+            params.insert("symbol".to_string(), binance_symbol.clone());
+            params.insert("interval".to_string(), interval.to_string());
+            params.insert("startTime".to_string(), start_time.to_string());
+            params.insert("limit".to_string(), page_size.to_string());
+
+            let json = if Self::is_futures_symbol(symbol) {
+                self.public_get_fapi("/fapi/v1/klines", Some(&params)).await?
+            } else {
+                self.public_get("/api/v3/klines", Some(&params)).await?
+            };
+
+            let klines = json
+                .as_array()
+                .ok_or_else(|| CcxtError::ParseError("Expected array of klines".to_string()))?;
+
+            let page_len = klines.len();
+
+            for kline in klines {
+                match parsers::parse_ohlcv(kline) {
+                    Ok(ohlcv) => {
+                        if ohlcv.timestamp < until {
+                            all_candles.push(ohlcv);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("Failed to parse OHLCV candle: {}", e);
+                    }
+                }
+            }
+
+            // Stop if we've reached the end of data or covered the requested range
+            if page_len < page_size as usize {
+                break;
+            }
+
+            if let Some(last) = all_candles.last() {
+                if last.timestamp >= until {
+                    break;
+                }
+                // Advance start_time to just after the last candle
+                start_time = last.timestamp + timeframe.to_milliseconds();
+            } else {
+                break;
+            }
+
+            // Brief sleep to avoid hitting rate limits
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        }
+
+        Ok(all_candles)
+    }
 }
 
 #[async_trait]
@@ -1600,5 +1678,45 @@ impl Exchange for Binance {
         }
 
         Ok(entries)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_timeframe_as_str() {
+        assert_eq!(Timeframe::OneMinute.as_str(), "1m");
+        assert_eq!(Timeframe::OneHour.as_str(), "1h");
+        assert_eq!(Timeframe::OneDay.as_str(), "1d");
+        assert_eq!(Timeframe::OneWeek.as_str(), "1w");
+        assert_eq!(Timeframe::OneMonth.as_str(), "1M");
+    }
+
+    #[test]
+    fn test_fetch_ohlcv_range_timeframe_ms() {
+        // Verify timeframe millisecond values used for pagination
+        assert_eq!(Timeframe::OneMinute.to_milliseconds(), 60_000);
+        assert_eq!(Timeframe::OneHour.to_milliseconds(), 3_600_000);
+        assert_eq!(Timeframe::OneDay.to_milliseconds(), 86_400_000);
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires live Binance API
+    async fn test_fetch_ohlcv_range_live() {
+        let binance = Binance::builder().build().unwrap();
+        // Fetch 3 hours of BTC/USDT 1h candles
+        let since = 1_700_000_000_000i64; // Nov 2023
+        let until = since + 3 * 3_600_000;
+        let candles = binance
+            .fetch_ohlcv_range("BTC/USDT", Timeframe::OneHour, since, until)
+            .await
+            .unwrap();
+        assert!(candles.len() <= 3);
+        for candle in &candles {
+            assert!(candle.timestamp >= since);
+            assert!(candle.timestamp < until);
+        }
     }
 }

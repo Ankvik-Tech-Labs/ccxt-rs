@@ -105,6 +105,27 @@ pub enum Timeframe {
 }
 
 impl Timeframe {
+    /// Convert timeframe to its standard string representation
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Timeframe::OneMinute => "1m",
+            Timeframe::ThreeMinutes => "3m",
+            Timeframe::FiveMinutes => "5m",
+            Timeframe::FifteenMinutes => "15m",
+            Timeframe::ThirtyMinutes => "30m",
+            Timeframe::OneHour => "1h",
+            Timeframe::TwoHours => "2h",
+            Timeframe::FourHours => "4h",
+            Timeframe::SixHours => "6h",
+            Timeframe::EightHours => "8h",
+            Timeframe::TwelveHours => "12h",
+            Timeframe::OneDay => "1d",
+            Timeframe::ThreeDays => "3d",
+            Timeframe::OneWeek => "1w",
+            Timeframe::OneMonth => "1M",
+        }
+    }
+
     /// Convert timeframe to milliseconds
     pub fn to_milliseconds(&self) -> i64 {
         match self {

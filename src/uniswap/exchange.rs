@@ -79,15 +79,16 @@
 
 use crate::base::{
     errors::{CcxtError, Result},
-    exchange::{Exchange, ExchangeFeatures, ExchangeType},
+    exchange::{Exchange, ExchangeFeatures, ExchangeType, Params},
     market_cache::MarketCache,
 };
-use crate::dex::{EvmProvider, SubgraphClient};
+use crate::dex::{DexWallet, EvmProvider, SubgraphClient};
 use crate::types::*;
 use crate::uniswap::{
     constants::{get_chain_config, get_chain_config_by_name, ChainConfig},
     parsers::*,
     pools::PoolManager,
+    swap,
 };
 use async_trait::async_trait;
 use rust_decimal::Decimal;
@@ -100,6 +101,10 @@ pub struct UniswapV3 {
     pool_manager: PoolManager,
     market_cache: Arc<RwLock<MarketCache>>,
     features: ExchangeFeatures,
+    /// RPC URL for building signing providers (stored for swap execution)
+    rpc_url: String,
+    /// Optional wallet for swap execution
+    wallet: Option<Arc<DexWallet>>,
 }
 
 impl UniswapV3 {
@@ -117,6 +122,16 @@ impl UniswapV3 {
     pub fn chain_config(&self) -> &'static ChainConfig {
         self.chain_config
     }
+
+    /// Get the wallet if configured
+    pub fn wallet(&self) -> Option<&DexWallet> {
+        self.wallet.as_deref()
+    }
+
+    /// Get the RPC URL
+    pub fn rpc_url(&self) -> &str {
+        &self.rpc_url
+    }
 }
 
 /// Builder for UniswapV3 exchange
@@ -129,6 +144,8 @@ pub struct UniswapV3Builder {
     rate_limit: bool,
     timeout: Duration,
     market_cache_ttl: Duration,
+    /// Private key for swap execution (hex, with or without 0x prefix)
+    private_key: Option<String>,
 }
 
 impl UniswapV3Builder {
@@ -143,7 +160,14 @@ impl UniswapV3Builder {
             rate_limit: true,
             timeout: Duration::from_secs(30),
             market_cache_ttl: Duration::from_secs(3600), // Default: 1 hour
+            private_key: None,
         }
+    }
+
+    /// Set private key for swap execution (enables create_order)
+    pub fn private_key(mut self, key: &str) -> Self {
+        self.private_key = Some(key.to_string());
+        self
     }
 
     /// Set chain by ID (e.g., 1 for Ethereum)
@@ -238,12 +262,20 @@ impl UniswapV3Builder {
         // Create pool manager
         let pool_manager = PoolManager::new(subgraph, provider);
 
-        // Define features
+        // Create wallet from private key if provided
+        let wallet = if let Some(ref key) = self.private_key {
+            Some(Arc::new(DexWallet::from_private_key(key)?))
+        } else {
+            None
+        };
+
+        // Define features (create_order enabled only if wallet is present)
         let features = ExchangeFeatures {
             fetch_ticker: true,
             fetch_ohlcv: true,
             fetch_trades: true,
             fetch_markets: true,
+            create_order: wallet.is_some(),
             ..Default::default()
         };
 
@@ -252,6 +284,8 @@ impl UniswapV3Builder {
             pool_manager,
             market_cache: Arc::new(RwLock::new(MarketCache::new(self.market_cache_ttl))),
             features,
+            rpc_url,
+            wallet,
         })
     }
 }
@@ -573,17 +607,156 @@ impl Exchange for UniswapV3 {
 
     async fn create_order(
         &self,
-        _symbol: &str,
-        _order_type: OrderType,
-        _side: OrderSide,
-        _amount: Decimal,
+        symbol: &str,
+        order_type: OrderType,
+        side: OrderSide,
+        amount: Decimal,
         _price: Option<Decimal>,
-        _params: Option<&crate::base::exchange::Params>,
+        params: Option<&Params>,
     ) -> Result<Order> {
-        Err(CcxtError::NotSupported(
-            "create_order not supported in this phase. Swap execution coming in Phase 2D."
-                .to_string(),
-        ))
+        // Only market orders are supported
+        if order_type != OrderType::Market {
+            return Err(CcxtError::NotSupported(
+                "Uniswap V3 only supports Market orders (AMM has no limit orders)".to_string(),
+            ));
+        }
+
+        // Require wallet
+        let wallet = self.wallet.as_ref().ok_or_else(|| {
+            CcxtError::AuthenticationError(
+                "Wallet not configured. Use UniswapV3::builder().private_key(...) to enable swaps"
+                    .to_string(),
+            )
+        })?;
+
+        // Resolve pool from symbol
+        let parsed = parse_uniswap_symbol(symbol)?;
+        let pool = if let Some(fee_tier) = parsed.fee_tier {
+            self.pool_manager
+                .get_pool_exact(&parsed.base, &parsed.quote, fee_tier)
+                .await?
+        } else {
+            self.pool_manager
+                .get_pool_highest_liquidity(&parsed.base, &parsed.quote)
+                .await?
+        };
+
+        // Determine token_in / token_out based on side
+        // Buy = spend quote to get base  (e.g., spend USDC, get WETH)
+        // Sell = spend base to get quote (e.g., spend WETH, get USDC)
+        let (token_in_addr, token_out_addr, decimals_in, decimals_out) = match side {
+            OrderSide::Buy => (
+                pool.token1_address, // quote = token_in
+                pool.token0_address, // base  = token_out
+                pool.token1_decimals,
+                pool.token0_decimals,
+            ),
+            OrderSide::Sell => (
+                pool.token0_address, // base  = token_in
+                pool.token1_address, // quote = token_out
+                pool.token0_decimals,
+                pool.token1_decimals,
+            ),
+        };
+
+        let fee = pool.fee_tier.as_basis_points();
+        let amount_in = swap::decimal_to_u256_with_decimals(amount, decimals_in);
+
+        let quoter_addr: alloy::primitives::Address = self
+            .chain_config
+            .v3_quoter
+            .parse()
+            .map_err(|e| CcxtError::ConfigError(format!("Invalid quoter address: {}", e)))?;
+
+        let router_addr: alloy::primitives::Address = self
+            .chain_config
+            .v3_swap_router02
+            .parse()
+            .map_err(|e| CcxtError::ConfigError(format!("Invalid router address: {}", e)))?;
+
+        // Step 1: Get quote
+        let quoted_out = swap::quote_exact_input_single(
+            &self.rpc_url,
+            quoter_addr,
+            token_in_addr,
+            token_out_addr,
+            fee,
+            amount_in,
+        )
+        .await?;
+
+        // Step 2: Apply slippage
+        let slippage_bps = swap::parse_slippage_bps(params);
+        let amount_out_min = swap::apply_slippage(quoted_out, slippage_bps);
+
+        let signer = wallet.signer().clone();
+        let recipient = wallet.address();
+
+        // Step 3: Check and approve if needed
+        swap::ensure_allowance(
+            &self.rpc_url,
+            &signer,
+            token_in_addr,
+            router_addr,
+            amount_in,
+        )
+        .await?;
+
+        // Step 4: Execute swap
+        let tx_hash = swap::execute_swap(
+            &self.rpc_url,
+            router_addr,
+            &signer,
+            token_in_addr,
+            token_out_addr,
+            fee,
+            amount_in,
+            amount_out_min,
+            recipient,
+        )
+        .await?;
+
+        let tx_hash_str = format!("{:?}", tx_hash);
+        let amount_out = swap::u256_to_decimal_with_decimals(quoted_out, decimals_out);
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let symbol_formatted =
+            format_uniswap_symbol(&parsed.base, &parsed.quote, Some(pool.fee_tier));
+
+        Ok(Order {
+            id: tx_hash_str.clone(),
+            client_order_id: None,
+            timestamp: now_ms,
+            datetime: chrono::Utc::now().to_rfc3339(),
+            last_trade_timestamp: Some(now_ms),
+            last_update_timestamp: None,
+            symbol: symbol_formatted,
+            order_type: OrderType::Market,
+            time_in_force: Some(TimeInForce::Ioc),
+            post_only: Some(false),
+            side,
+            price: None,
+            average: None,
+            amount,
+            filled: Some(amount),
+            remaining: Some(Decimal::ZERO),
+            cost: Some(amount_out),
+            status: OrderStatus::Closed,
+            fee: None,
+            trades: None,
+            stop_price: None,
+            trigger_price: None,
+            take_profit_price: None,
+            stop_loss_price: None,
+            reduce_only: Some(false),
+            info: Some(serde_json::json!({
+                "tx_hash": tx_hash_str,
+                "pool": pool.address.to_string(),
+                "fee_tier": fee,
+                "amount_in": amount.to_string(),
+                "amount_out": amount_out.to_string(),
+                "slippage_bps": slippage_bps,
+            })),
+        })
     }
 
     async fn cancel_order(&self, _id: &str, _symbol: Option<&str>) -> Result<Order> {
